@@ -1,0 +1,38 @@
+Opcode: oooo
+  Load: 0000
+  Mul:  0001
+  Add:  0010
+  Sub:  0011
+  Div:  0100
+  Mod:  0101
+  Eq:   0110
+  Ne:   0111
+  Ge:   1000
+  Lt:   1001
+  Jump: 1010
+  BNez: 1011
+  Put:  1100
+  LSL:  1101
+  And:  1110
+  Or:   1111
+
+Value: 
+  Literal:   0 ttt 
+  Other:     1 ttt
+
+type:
+  Int:   0xx
+  Float: 1xx
+  8:     x11
+  16:    x10
+  32:    x01
+  64:    x00
+  Keep:  111
+
+MemLoc:
+  Stack: 0xxxxxxx 
+  Reg:   1xxxxxxx
+
+Notes:
+  Or 0 can be used to cast Float => Int
+  Add 0.0 can be used to cast Int => Float

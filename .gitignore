@@ -1,0 +1,6 @@
+*.json
+*.fir
+out/
+.vscode/
+.metals/
+.bloop/
