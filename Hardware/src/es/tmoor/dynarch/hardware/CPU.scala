@@ -65,14 +65,14 @@ object CPU extends chisel3.Module {
   usb.pullup_out := DontCare
 
   val uR = RegInit(0.B)
-  val uG = RegInit(0.B)
+  val uG = RegInit(1.B)
   val uB = RegInit(1.B)
 
   val buttonLast = RegInit(1.B)
 
   buttonLast := buttonLast || usr.btn
 
-  when (usr.btn != ) {
+  when (usr.btn =/= buttonLast) {
     uR := uB
     uG := uR
     uB := uG
@@ -82,7 +82,7 @@ object CPU extends chisel3.Module {
   rgb_led0.g := uG
   rgb_led0.b := uB
 
-  rst.n := 0.B
+  rst.n := 1.B
 
   spiflash4x.cs_n := DontCare
   spiflash4x.dq_out := DontCare
