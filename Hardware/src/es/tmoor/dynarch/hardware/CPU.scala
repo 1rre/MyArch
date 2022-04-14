@@ -64,9 +64,19 @@ object CPU extends chisel3.Module {
   usb.d_p_out := DontCare
   usb.pullup_out := DontCare
 
-  rgb_led0.r := false.B
-  rgb_led0.g := false.B
-  rgb_led0.b := true.B
+  val uR = RegInit(0.B)
+  val uG = RegInit(0.B)
+  val uB = RegInit(1.B)
+
+  when (usr.btn) {
+    uR := uB
+    uG := uR
+    uB := uG
+  }
+
+  rgb_led0.r := uR
+  rgb_led0.g := uG
+  rgb_led0.b := uB
 
   rst.n := 0.B
 
