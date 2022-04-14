@@ -68,7 +68,11 @@ object CPU extends chisel3.Module {
   val uG = RegInit(0.B)
   val uB = RegInit(1.B)
 
-  when (usr.btn) {
+  val buttonLast = RegInit(1.B)
+
+  buttonLast := buttonLast || usr.btn
+
+  when (usr.btn != ) {
     uR := uB
     uG := uR
     uB := uG
