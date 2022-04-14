@@ -25,6 +25,7 @@ module CPU(
   output        usb_d_n_out,
   input         usb_pullup_in,
   output        usb_pullup_out,
+  output        rst_n,
   output        spiflash4x_cs_n,
   input  [3:0]  spiflash4x_dq_in,
   output [3:0]  spiflash4x_dq_out
@@ -38,15 +39,16 @@ module CPU(
   assign ddram_dm = 2'h0;
   assign ddram_dq_out = 16'h0;
   assign ddram_dqs_p_out = 2'h0;
-  assign ddram_clk_p = clock; // @[CPU.scala 56:15]
-  assign ddram_cke = 1'h0; // @[CPU.scala 57:13]
-  assign ddram_reset_n = 1'h1; // @[CPU.scala 58:17]
-  assign rgb_led0_r = 1'h0; // @[CPU.scala 64:14]
-  assign rgb_led0_g = 1'h0; // @[CPU.scala 65:14]
-  assign rgb_led0_b = 1'h1; // @[CPU.scala 66:14]
+  assign ddram_clk_p = clock; // @[CPU.scala 59:15]
+  assign ddram_cke = 1'h0; // @[CPU.scala 60:13]
+  assign ddram_reset_n = 1'h1; // @[CPU.scala 61:17]
+  assign rgb_led0_r = 1'h0; // @[CPU.scala 67:14]
+  assign rgb_led0_g = 1'h0; // @[CPU.scala 68:14]
+  assign rgb_led0_b = 1'h1; // @[CPU.scala 69:14]
   assign usb_d_p_out = 1'h0;
   assign usb_d_n_out = 1'h0;
   assign usb_pullup_out = 1'h0;
+  assign rst_n = 1'h0; // @[CPU.scala 71:9]
   assign spiflash4x_cs_n = 1'h0;
   assign spiflash4x_dq_out = 4'h0;
 endmodule
