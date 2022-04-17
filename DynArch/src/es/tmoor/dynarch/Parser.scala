@@ -78,8 +78,8 @@ object Parser extends util.parsing.combinator.RegexParsers {
   object SubP extends Op1("-", Sub.apply)
   case class Div(v: Value) extends Operation
   object DivP extends Op1("/", Div.apply)
-  case class Mod(v: Value) extends Operation
-  object ModP extends Op1("%", Mod.apply)
+  case class Rem(v: Value) extends Operation
+  object RemP extends Op1("%", Rem.apply)
   case class Eq(v: Value) extends Operation
   object EqP extends Op1("=", Eq.apply)
   case class Ne(v: Value) extends Operation
@@ -104,7 +104,7 @@ object Parser extends util.parsing.combinator.RegexParsers {
   object OrP extends Op1("|", Or.apply)
 
   def operation =
-    LoadP.p | MulP.p | AddP.p | SubP.p | DivP.p | ModP.p | EqP.p | NeP.p |
+    LoadP.p | MulP.p | AddP.p | SubP.p | DivP.p | RemP.p | EqP.p | NeP.p |
     GeP.p | LtP.p | JumpP.p | BNezP.p | PutP.p | LslP.p | AndP.p | OrP.p
 }
 
@@ -131,11 +131,11 @@ object Parser extends util.parsing.combinator.RegexParsers {
   case object Sub extends Operator[Sb.type]
   case object Mul extends Operator[Ml.type]
   case object Div extends Operator[Dv.type]
-  case object Mod extends Operator[Md.type]
+  case object Rem extends Operator[Md.type]
   def operator = Seq (
     ">=" ^^^ GreaterEqual, "=<" ^^^ LessEqual, ">" ^^^ Greater, "<" ^^^ Less,
     "/=" ^^^ NotEqual, "=" ^^^ Equal,
-    "+" ^^^ Add, "-" ^^^ Sub, "*" ^^^ Mul, "/" ^^^ Div, "%" ^^^ Mod
+    "+" ^^^ Add, "-" ^^^ Sub, "*" ^^^ Mul, "/" ^^^ Div, "%" ^^^ Rem
   ).reduce(_|_)
 
   case class Text(t: String) extends Operator

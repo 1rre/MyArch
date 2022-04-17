@@ -4,7 +4,7 @@ Opcode: oooo
   Add:  0010
   Sub:  0011
   Div:  0100
-  Mod:  0101
+  Rem:  0101
   Eq:   0110
   Ne:   0111
   Ge:   1000
@@ -17,17 +17,22 @@ Opcode: oooo
   Or:   1111
 
 Value: 
-  Literal:   0 ttt 
-  Other:     1 ttt
+  Literal: 00 tt
+  Stack:   01 tt 
+  Reg:     10 tt
+  Ref:     11 tt
 
 type:
-  Int:   0xx
-  Float: 1xx
-  8:     x11
-  16:    x10
-  32:    x01
-  64:    x00
-  Keep:  111
+  Signed:   00
+  Unsigned: 01
+  Float:    10
+  Double:   11
+
+Size:
+  8:  00
+  16: 01
+  32: 10
+  64: 11
 
 MemLoc:
   Stack: 0xxxxxxx 

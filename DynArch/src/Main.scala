@@ -9,7 +9,8 @@ object Main extends App {
 5.0
 : x0
 x0
-: y0
++ 12
+: f64 @ y0
 i64 @ y0
 0
 : x0
