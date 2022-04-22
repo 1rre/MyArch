@@ -1,0 +1,3 @@
+-define(N_REGISTERS, 256).
+-define(WORD_SIZE, 66).
+-define(REG_SIZE, (?WORD_SIZE * ?N_REGISTERS)).

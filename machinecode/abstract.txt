@@ -1,0 +1,41 @@
+Ops:
+0000 | Load
+0001 | Add
+0010 | Subtract
+0011 | Multiply
+0100 | Divide
+0101 | Modulo
+0110 | Equals
+0111 | Not Equals
+1000 | Greater or Equals
+1000 | Less or Equals
+1001 | Greater Then (Pseudo-op)
+1001 | Less Than (Pseudo-op)
+1010 | Type Convert
+1011 | Assign
+1100 | Type Cast
+TODO:
+1100 | Invert
+1101 | Goto
+1110 | Goto if nonzero
+1111 | LSL/LSR
+
+Value types:
+Register: 0..1023
+Reference to Register: 0..1023
+Memory: Offset from SP: 0..1023
+Literal: ?? Bits (I guess 64, but where to put?)
+Maybe store literals in a per-function bank, like strings in other arches?
+Alternatively calculate with shift and and?
+
+oooo | 10 | rr / rrrrrrrr // Register
+oooo | 11 | tt / rrrrrrrr // Reference
+oooo | 01 | tt / dddddddd // Stack
+oooo | 00 | tt | llllllll... // Literal? Maybe have a temp register for building literal?
+
+00 0  => i8
+01 0  => i16
+00(1) => i32
+01(1) => i64
+10(1) => f32
+11(1) => f64

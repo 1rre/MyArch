@@ -1,0 +1,49 @@
+Opcode: oooo
+  Load: 0000
+  Mul:  0001
+  Add:  0010
+  Sub:  0011
+  Div:  0100
+  Rem:  0101
+  Eq:   0110
+  Ne:   0111
+  Ge:   1000
+  Lt:   1001
+  Jump: 1010
+  TCnv: 1011
+  Put:  1100
+  LSL:  1101
+  And:  1110
+  Or:   1111
+
+Value: 
+  Literal: 00 tt
+  Stack:   01 tt 
+  Reg:     10 tt
+  Ref:     11 tt
+
+type:
+  Signed:   00
+  Unsigned: 01
+  Float:    10
+  Double:   11
+
+jump:
+  Unconditional/Goto: 00
+  Unconditional/Call: 01
+  Unconditional/Return: 11
+  Conditional: 10
+
+Size:
+  8:  00
+  16: 01
+  32: 10
+  64: 11
+
+MemLoc:
+  Stack: 0xxxxxxx 
+  Reg:   1xxxxxxx
+
+Notes:
+  Or 0 can be used to cast Float => Int
+  Add 0.0 can be used to cast Int => Float
