@@ -23,7 +23,6 @@ start() ->
     io:fwrite("\e[2J\e[3J\e[0;0H", []),
     listen()
   end),
-  timer:sleep(500),
   loop().
 
 loop() ->

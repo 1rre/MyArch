@@ -1,49 +1,83 @@
-Opcode: oooo
-  Load: 0000
-  Mul:  0001
-  Add:  0010
-  Sub:  0011
-  Div:  0100
-  Rem:  0101
-  Eq:   0110
-  Ne:   0111
-  Ge:   1000
-  Lt:   1001
-  Jump: 1010
-  TCnv: 1011
-  Put:  1100
-  LSL:  1101
-  And:  1110
-  Or:   1111
+Opcode:
+  Load: 0000 {Value}
+  Mul:  0001 {Value}
+  Add:  0010 {Value}
+  Sub:  0011 {Value}
+  Div:  0100 {Value}
+  Rem:  0101 {Value}
+  Xor:  0110 {Value}
+  Jump: 0111 {JSpec}
+  Ge:   1000 {Value}
+  Lt:   1001 {Value}
+  TCst: 1010 {TSpec}
+  TCnv: 1011 {TSpec}
+  Put:  1100 {Value}
+  LSL:  1101 {Value}
+  And:  1110 {Value}
+  Or:   1111 {Value}
 
-Value: 
-  Literal: 00 tt
-  Stack:   01 tt 
-  Reg:     10 tt
-  Ref:     11 tt
+Value:
+  {Literal}
+  {Stack}
+  {Reg}
+  {Ref}
 
-type:
-  Signed:   00
-  Unsigned: 01
-  Float:    10
-  Double:   11
+Literal:
+  0010 xxxxxxxx (8 bits sint)
+  0011 xxxxxxxxxxxxxxxx (16 bits sint)
+  0000 xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx (32 bits sint)
+  0001 xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx (64 bits sint)
+  0100 xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx (32 bits float)
+  0101 xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx (64 bits float)
 
-jump:
-  Unconditional/Goto: 00
-  Unconditional/Call: 01
-  Unconditional/Return: 11
-  Conditional: 10
+Stack:
+  0110 xxxxxxxxxxxxxxxx (8 bits sint)
+  0111 xxxxxxxxxxxxxxxx (16 bits sint)
+  1000 xxxxxxxxxxxxxxxx (32 bits sint)
+  1001 xxxxxxxxxxxxxxxx (64 bits sint)
+  1010 xxxxxxxxxxxxxxxx (32 bits float)
+  1011 xxxxxxxxxxxxxxxx (64 bits float)
 
-Size:
-  8:  00
-  16: 01
-  32: 10
-  64: 11
+Ref:
+  1110 0xxxxxxx (8 bits sint)
+  1110 1xxxxxxx (16 bits sint)
+  1100 0xxxxxxx (32 bits sint)
+  1100 1xxxxxxx (64 bits sint)
+  1101 0xxxxxxx (32 bits float)
+  1101 1xxxxxxx (64 bits float)
+  
+Reg:
+  1111 _xxxxxxx (type kept)
 
-MemLoc:
-  Stack: 0xxxxxxx 
-  Reg:   1xxxxxxx
+JSpec:
+  0000 xxxxxxxxxxxxxxxx (literal, goto)
+  0001 xxxxxxxxxxxxxxxx (literal, bnez)
+  0010 xxxxxxxxxxxxxxxx (literal, call)
+  0011 xxxxxxxxxxxxxxxx (literal, return)
 
-Notes:
-  Or 0 can be used to cast Float => Int
-  Add 0.0 can be used to cast Int => Float
+  0100 xxxxxxxxxxxxxxxx (stack, goto)
+  0101 xxxxxxxxxxxxxxxx (stack, bnez)
+  0110 xxxxxxxxxxxxxxxx (stack, call)
+  0111 xxxxxxxxxxxxxxxx (stack, return)
+
+  1000 1xxxxxxx (reg, goto)
+  1001 1xxxxxxx (reg, bnez)
+  1010 1xxxxxxx (reg, call)
+  1011 1xxxxxxx (reg, return)
+  
+  1100 0xxxxxxx (ref, goto)
+  1101 0xxxxxxx (ref, bnez)
+  1110 0xxxxxxx (ref, call)
+  1111 0xxxxxxx (ref, return)
+
+TSpec:
+  S8:  0010
+  S16: 0011
+  S32: 0000
+  S64: 0001
+  U8:  0110
+  U16: 0111
+  U32: 0100
+  U64: 0101
+  F32: 1000
+  F64: 1001

@@ -1,0 +1,2279 @@
+#include "micro_io.h"
+#include "micro_malloc.h"
+#include "micro_basic.h"
+
+#include <stdio.h>
+
+int main() {
+  buffer_t buffer = read_program();
+  return 0;
+}
+#include "micro_basic.h"
+#include "micro_io.h"
+#include "micro_malloc.h"
+
+#define EOF_CHAR 4
+#define BACKSP_CHAR 127
+#define CR_CHAR '\r'
+
+buffer_t read_program() {
+  buffer_t buffer;
+  char ch;
+  int len;
+  int blocks;
+  buffer = (buffer_t)mmalloc(MALLOC_BLOCK_SIZE);
+  blocks = 1;
+  len = 0; /* for \0 */
+
+  
+input_init:
+  ch = input();
+  switch (ch) {
+    case EOF_CHAR:
+      return buffer;
+    case BACKSP_CHAR:
+      buffer[len] = 0;
+      len--;
+    break;
+    case CR_CHAR:
+      ch = '\n';
+    default:
+      if (MALLOC_BLOCK_SIZE - (len % MALLOC_BLOCK_SIZE) <= 2) {
+        blocks++;
+        buffer = (buffer_t)mrealloc(buffer, blocks * MALLOC_BLOCK_SIZE);
+      }
+      buffer[len] = ch;
+      len++;
+  }
+  print("\e[0;0H\e[2J\e[3J");
+  print(buffer);
+  goto input_init;
+}#include "micro_io.h"
+
+#ifdef __myarch__
+
+void print_c(char c) {
+  #error "notimpl"
+}
+
+#else
+#include <stdio.h>
+
+void print_c(char c) {
+  putchar(c);
+}
+
+#include <termios.h>
+#include <sys/ioctl.h>
+#include <unistd.h>
+
+char input() {
+  struct termios oldattr, newattr;
+  char rtn;
+  tcgetattr(STDIN_FILENO, &oldattr);
+  newattr = oldattr;
+  cfmakeraw(&newattr);
+  newattr.c_lflag ^= ECHO;
+  tcsetattr(STDIN_FILENO, TCSANOW, &newattr);
+  rtn = getchar_unlocked();
+  tcsetattr(STDIN_FILENO, TCSANOW, &oldattr);
+  return rtn;
+}
+
+#endif
+
+
+void print(char* c) {
+  while (*c) print_c(*c++);
+}
+
+#include "micro_malloc.h"
+
+#define MEMORY_SIZE 0x7500
+#define N_BLOCKS (MEMORY_SIZE / MALLOC_BLOCK_SIZE)
+
+byte memory[MEMORY_SIZE];
+byte availability[N_BLOCKS];
+
+
+int find_n_free(int n) {
+  int i, j;
+  for (i = 0; i < N_BLOCKS; i++) {
+    if (!availability[i]) {
+      for (j = i; i < j + n && i < N_BLOCKS; i++) {
+        if (availability[i]) break;
+      }
+      if (i != j + n) continue;
+      return j;
+    }
+  }
+  return -1;
+}
+
+void mmset(void* ptr, byte to, int n) {
+  int i;
+  for (i = 0; i < n; i++) {
+    ((byte*) ptr)[i] = to;
+  }
+}
+
+
+void* mmalloc(int size) {
+  int n, x, i;
+  n = ((size - 1) / MALLOC_BLOCK_SIZE) + 1;
+  x = find_n_free(n);
+  for (i = x; i < x + n; i++) {
+    availability[i] = n - i - x;
+  }
+  return memory + x;
+}
+
+int ptr_diff(void* ptr1, void* ptr2) {
+  return (byte*)ptr1 - (byte*)ptr2;
+}
+
+void mmcpy(void* ptr1, int size, void* ptr2) {
+  int i;
+  for (i = 0; i < size; i++) {
+    ((byte*)ptr2)[i] = ((byte*)ptr1)[i];
+  }
+}
+
+void mfree(void* ptr) {
+  int n, i, size;
+  n = ptr_diff(ptr, memory);
+  size = availability[n];
+  for (i = 0; i < size; i++) {
+    availability[n+i] = 0;
+  }
+}
+
+void* mrealloc(void* ptr, int size) {
+  int n, c_size;
+  void* newPtr;
+  n = ptr_diff(ptr, memory);
+  c_size = availability[n];
+  if (size / MALLOC_BLOCK_SIZE == c_size / MALLOC_BLOCK_SIZE)
+    newPtr= ptr;
+  else {
+    newPtr = mmalloc(size);
+    mmcpy((byte*)ptr, c_size, (byte*)newPtr);
+    mfree(ptr);
+  }
+  return newPtr;
+}
+
+
+#include <termios.h>
+#include <unistd.h>
+#include <stdio.h>
+#include <string.h>
+#include <sys/ioctl.h>
+#include <stdio.h>
+
+#include "erl_nif.h"
+#define str(x) #x
+#define GOTO(x,y) "\e["str(x)";"str(y)"H"
+#define CLEAR_SCREEN "\e[""3J\e[2J"
+#define GOTO_START_LINE "\e[""0G"
+#define CLEAR_LINE "\e[""2K"
+#define CURSOR_UP "\e[""A"
+#define CURSOR_DOWN "\e[""B"
+#define CLEAR_TO_END "\e[""0J"
+
+#define BUFFER_BLOCK_SIZE 80 * sizeof(char)
+
+int col = 0;
+int row = 0;
+
+typedef struct {int len; int ptr; char* contents;} row_t;
+typedef struct {int size; row_t* rows;} buffer_t;
+
+buffer_t buffer = {0,0};
+
+
+struct winsize old = {0,0,0};
+
+void redraw_all(struct winsize w) {
+  printf(
+    CLEAR_SCREEN
+    GOTO(0,0)
+  );
+  for (int i = 0; i < buffer.size; i++) {
+    if (i) printf("\n");
+    printf("%s", buffer.rows[i].contents);
+    printf(CLEAR_TO_END);
+  }
+}
+
+void draw_buffer() {
+  struct winsize w;
+  ioctl(0, TIOCGWINSZ, &w);
+  if (w.ws_row != old.ws_row) redraw_all(w);
+  else {
+    int row = 0;
+    for (int i = 0; i < buffer.size - 1; i++)
+      row += (buffer.rows[i].ptr / w.ws_col) + 1;
+    printf(
+      CLEAR_LINE
+      GOTO(%d, 0)
+      "%s",
+      row+1,
+      buffer.rows[buffer.size - 1].contents
+    );
+  }
+  old = w;
+}
+
+void grow_row(int n) {
+  char* end = buffer.rows[n].contents + buffer.rows[n].len;
+  buffer.rows[n].len += BUFFER_BLOCK_SIZE;
+  buffer.rows[n].contents = realloc(buffer.rows[n].contents, buffer.rows[n].len);
+  memset(end, 0, BUFFER_BLOCK_SIZE);
+}
+
+void shrink_row(int n) {
+  buffer.rows[n].len -= BUFFER_BLOCK_SIZE;
+  buffer.rows[n].contents = realloc(buffer.rows[n].contents, buffer.rows[n].len);
+}
+
+void add_row() {
+  buffer.rows = realloc(buffer.rows, (buffer.size + 1) * sizeof(row_t));
+  buffer.rows[buffer.size].len = BUFFER_BLOCK_SIZE;
+  buffer.rows[buffer.size].ptr = 0;
+  buffer.rows[buffer.size].contents = calloc(BUFFER_BLOCK_SIZE, sizeof(char));
+  buffer.size++;
+}
+
+void rm_row() {
+  buffer.size--;
+  free(buffer.rows[buffer.size].contents);
+  buffer.rows = realloc(buffer.rows, buffer.size * sizeof(row_t));
+}
+
+void do_put(int c) {
+  if (buffer.size == 0) add_row();
+  if (buffer.rows[buffer.size - 1].ptr + 3 >= buffer.rows[buffer.size - 1].len)
+    grow_row(buffer.size - 1);
+  (buffer.rows[buffer.size - 1].contents)[buffer.rows[buffer.size - 1].ptr] = c;
+  buffer.rows[buffer.size - 1].ptr++;
+  draw_buffer();
+}
+
+void do_newline() {
+  printf(CURSOR_DOWN);
+  add_row();
+}
+
+void do_bksp() {
+  if (buffer.rows[buffer.size - 1].ptr == 0) {
+    if (buffer.size > 1) rm_row();
+    printf(CLEAR_LINE CURSOR_UP);
+  } else {
+    buffer.rows[buffer.size - 1].ptr--;
+    buffer.rows[buffer.size - 1].contents[buffer.rows[buffer.size - 1].ptr] = 0;
+  }
+}
+
+static ERL_NIF_TERM put_char(
+    ErlNifEnv* env,
+    int args_size,
+    const ERL_NIF_TERM args[args_size]
+  ) {
+  int to_put;
+  if (!enif_get_int(env, args[0], &to_put))
+    return enif_make_badarg(env);
+  if (to_put == 127) do_bksp();
+  else if (to_put == '\n') do_newline();
+  else do_put(to_put);
+  draw_buffer();
+  return enif_make_atom(env, "ok");
+}
+
+static ERL_NIF_TERM get_char(
+    ErlNifEnv* env,
+    int args_size,
+    const ERL_NIF_TERM args[args_size]
+  ) {
+  if (args_size != 0) return enif_make_badarg(env);
+  
+  struct termios oldattr, newattr;
+  int ch;
+  char s[2] = {0,0};
+
+  tcgetattr( STDIN_FILENO, &oldattr );
+  newattr = oldattr;
+  cfmakeraw(&newattr);
+  newattr.c_lflag = (0x8a3b | IXANY | IXOFF) & ~( ICANON | ECHO );
+  tcsetattr( STDIN_FILENO, TCSANOW, &newattr );
+  ch = getchar();
+  if (ch == '\e') {
+    getchar();
+    getchar();
+    if (getchar() == '1') getchar();
+  } else {
+    if (ch == '\r') ch = '\n';
+    s[0] = ch;
+  }
+  tcsetattr( STDIN_FILENO, TCSANOW, &oldattr );
+  return enif_make_string(env, s, ERL_NIF_LATIN1);
+}
+
+#include <termios.h>
+#include <unistd.h>
+#include <stdio.h>
+#include <string.h>
+#include <sys/ioctl.h>
+#include <stdio.h>
+
+#include "erl_nif.h"
+#define str(x) #x
+#define GOTO(x,y) "\e["str(x)";"str(y)"H"
+#define CLEAR_SCREEN "\e[""3J\e[2J"
+#define GOTO_START_LINE "\e[""0G"
+#define CLEAR_LINE "\e[""2K"
+#define CURSOR_UP "\e[""A"
+#define CURSOR_DOWN "\e[""B"
+#define CLEAR_TO_END "\e[""0J"
+
+#define BUFFER_BLOCK_SIZE 80 * sizeof(char)
+
+int col = 0;
+int row = 0;
+
+typedef struct {int len; int ptr; char* contents;} row_t;
+typedef struct {int size; row_t* rows;} buffer_t;
+
+buffer_t buffer = {0,0};
+
+
+struct winsize old = {0,0,0};
+
+void redraw_all(struct winsize w) {
+  printf(
+    CLEAR_SCREEN
+    GOTO(0,0)
+  );
+  for (int i = 0; i < buffer.size; i++) {
+    if (i) printf("\n");
+    printf("%s", buffer.rows[i].contents);
+    printf(CLEAR_TO_END);
+  }
+}
+
+void draw_buffer() {
+  struct winsize w;
+  ioctl(0, TIOCGWINSZ, &w);
+  if (w.ws_row != old.ws_row) redraw_all(w);
+  else {
+    int row = 0;
+    for (int i = 0; i < buffer.size - 1; i++)
+      row += (buffer.rows[i].ptr / w.ws_col) + 1;
+    printf(
+      CLEAR_LINE
+      GOTO(%d, 0)
+      "%s",
+      row+1,
+      buffer.rows[buffer.size - 1].contents
+    );
+  }
+  old = w;
+}
+
+void grow_row(int n) {
+  char* end = buffer.rows[n].contents + buffer.rows[n].len;
+  buffer.rows[n].len += BUFFER_BLOCK_SIZE;
+  buffer.rows[n].contents = realloc(buffer.rows[n].contents, buffer.rows[n].len);
+  memset(end, 0, BUFFER_BLOCK_SIZE);
+}
+
+void shrink_row(int n) {
+  buffer.rows[n].len -= BUFFER_BLOCK_SIZE;
+  buffer.rows[n].contents = realloc(buffer.rows[n].contents, buffer.rows[n].len);
+}
+
+void add_row() {
+  buffer.rows = realloc(buffer.rows, (buffer.size + 1) * sizeof(row_t));
+  buffer.rows[buffer.size].len = BUFFER_BLOCK_SIZE;
+  buffer.rows[buffer.size].ptr = 0;
+  buffer.rows[buffer.size].contents = calloc(BUFFER_BLOCK_SIZE, sizeof(char));
+  buffer.size++;
+}
+
+void rm_row() {
+  buffer.size--;
+  free(buffer.rows[buffer.size].contents);
+  buffer.rows = realloc(buffer.rows, buffer.size * sizeof(row_t));
+}
+
+void do_put(int c) {
+  if (buffer.size == 0) add_row();
+  if (buffer.rows[buffer.size - 1].ptr + 3 >= buffer.rows[buffer.size - 1].len)
+    grow_row(buffer.size - 1);
+  (buffer.rows[buffer.size - 1].contents)[buffer.rows[buffer.size - 1].ptr] = c;
+  buffer.rows[buffer.size - 1].ptr++;
+  draw_buffer();
+}
+
+void do_newline() {
+  printf(CURSOR_DOWN);
+  add_row();
+}
+
+void do_bksp() {
+  if (buffer.rows[buffer.size - 1].ptr == 0) {
+    if (buffer.size > 1) rm_row();
+    printf(CLEAR_LINE CURSOR_UP);
+  } else {
+    buffer.rows[buffer.size - 1].ptr--;
+    buffer.rows[buffer.size - 1].contents[buffer.rows[buffer.size - 1].ptr] = 0;
+  }
+}
+
+static ERL_NIF_TERM put_char(
+    ErlNifEnv* env,
+    int args_size,
+    const ERL_NIF_TERM args[args_size]
+  ) {
+  int to_put;
+  if (!enif_get_int(env, args[0], &to_put))
+    return enif_make_badarg(env);
+  if (to_put == 127) do_bksp();
+  else if (to_put == '\n') do_newline();
+  else do_put(to_put);
+  draw_buffer();
+  return enif_make_atom(env, "ok");
+}
+
+static ERL_NIF_TERM get_char(
+    ErlNifEnv* env,
+    int args_size,
+    const ERL_NIF_TERM args[args_size]
+  ) {
+  if (args_size != 0) return enif_make_badarg(env);
+  
+  struct termios oldattr, newattr;
+  int ch;
+  char s[5] = {0,0,0,0,0};
+
+  tcgetattr( STDIN_FILENO, &oldattr );
+  newattr = oldattr;
+  cfmakeraw(&newattr);
+  newattr.c_lflag = (0x8a3b | IXANY | IXOFF) & ~( ICANON | ECHO );
+  tcsetattr( STDIN_FILENO, TCSANOW, &newattr );
+getc_retry:
+  ch = getchar_unlocked();
+  if (ch == '\e') {
+    ch = getchar_unlocked();
+    if (ch != '[') {
+      tcsetattr( STDIN_FILENO, TCSANOW, &oldattr );
+      return enif_make_badarg(env);
+    }
+    goto getch_esc;
+  } else if (ch == '\r') ch = '\n';
+  s[0] = ch;
+  goto end;
+
+getch_esc:
+  if (getchar_unlocked() == '1') {
+    getchar_unlocked();
+  }
+end:
+  tcsetattr( STDIN_FILENO, TCSANOW, &oldattr );
+  return enif_make_string(env, s, ERL_NIF_LATIN1);
+}
+
+
+static ErlNifFunc nif_funcs[] = {
+    {"get_char", 0, get_char},
+    {"put_char", 1, put_char}
+};
+
+ERL_NIF_INIT(tty_client, nif_funcs, NULL, NULL, NULL, NULL);
+#ifndef header_micro_basic
+#define header_micro_basic
+
+typedef char* buffer_t;
+
+buffer_t read_program();
+
+#endif /* header_micro_basic */
+#ifndef header_micro_io
+#define header_micro_io
+
+void print_c(char);
+void print(char*);
+char input(void);
+
+#endif /* header_micro_io */
+#ifndef header_micro_malloc
+#define header_micro_malloc
+
+#define MALLOC_BLOCK_SIZE 128
+typedef unsigned char byte;
+
+void* mmalloc(int);
+void* mrealloc(void*, int);
+void mmset(void*, byte, int);
+void mfree(void*);
+void mmcpy(void*, int, void*);
+
+#endif /* header_micro_malloc */package es.tmoor.dynarch.hardware
+package comb
+
+
+import chisel3._
+import chisel3.util.Mux1H
+
+class ALU extends Module {
+  val io = IO(new Bundle {
+    val in1 = Input(new Typed)
+    val in2 = Input(new Typed)
+    val out = Output(new Typed)
+    val op = Input(UInt(4.W))
+  })
+  import io._, Const._
+  
+  def i2d(in: UInt): UInt = in
+  def f2d(in: UInt): UInt = in
+  
+  def u2f(in: UInt): UInt = in
+  def u2d(in: UInt): UInt = in
+
+  def i2f(in: UInt): UInt = in
+  def d2f(in: UInt): UInt = in
+  
+  def d2i(in: UInt): UInt = in
+  def f2i(in: UInt): UInt = in
+
+  val in1Upgrade = Wire(UInt(64.W))
+  val in2Upgrade = Wire(UInt(64.W))
+  val tUpgrade = Wire(UInt(2.W))
+
+  def upgrade(t1: UInt, t2: UInt, tu: UInt, f1: UInt => UInt = identity, f2: UInt => UInt = identity) = (in: WhenContext) => {
+    in.elsewhen (in1.t === t1 && in1.t === t2) {
+      tUpgrade := tu
+      in1Upgrade := f1(in1.d)
+      in2Upgrade := f2(in2.d)
+    }
+  }
+  Seq(
+    upgrade(TDouble, TDouble, TDouble),
+    upgrade(TDouble, TFloat, TDouble, f2=f2d),
+    upgrade(TDouble, TSigned, TDouble, f2=i2d),
+    upgrade(TDouble, TUnsigned, TDouble, f2=u2d),
+    upgrade(TFloat, TDouble, TDouble, f1=f2d),
+    upgrade(TFloat, TFloat, TFloat),
+    upgrade(TFloat, TSigned, TFloat, f2=i2f),
+    upgrade(TFloat, TUnsigned, TFloat, f2=u2f),
+    upgrade(TSigned, TUnsigned, TUnsigned),
+    upgrade(TUnsigned, TSigned,  TUnsigned),
+  ).foldLeft(when(0.B) {
+    tUpgrade := in1.t
+    in1Upgrade := in1.d
+    in2Upgrade := in2.d
+  }) ((acc,v) => v(acc)).otherwise {
+    tUpgrade := in1.t
+    in1Upgrade := in1.d
+    in2Upgrade := in2.d
+  }
+
+  val result = Reg(new Typed)
+  out := result
+
+  val unsignedALU = Module(new alu.Unsigned)
+  unsignedALU.io.in1 := in1Upgrade
+  unsignedALU.io.in2 := in2Upgrade
+  unsignedALU.io.op := op
+  
+  val signedALU = Module(new alu.Signed)
+  signedALU.io.in1 := in1Upgrade.asTypeOf(signedALU.io.in1)
+  signedALU.io.in2 := in2Upgrade.asTypeOf(signedALU.io.in2)
+  signedALU.io.op := op
+
+  result := Mux1H(Seq(
+    (tUpgrade === TUnsigned) -> unsignedALU.io.out,
+    (tUpgrade === TSigned) -> signedALU.io.out
+  ))
+}package es.tmoor.dynarch.hardware
+package comb.alu
+
+import chisel3._
+import chisel3.util.Mux1H
+import chisel3.util.MuxCase
+import chisel3.util.Cat
+
+class Signed extends Module {
+  val io = IO(new Bundle {
+    val in1 = Input (SInt(64.W))
+    val in2 = Input (SInt(64.W))
+    val op  = Input (UInt( 4.W))
+    val out = Output(new Typed)
+  })
+
+  import io._, Const._
+
+  val outS = Wire(SInt(64.W))
+  out.d := outS.asTypeOf(UInt(64.W))
+
+  def lslOut = {
+    def shiftAm = in2 asTypeOf SInt(64.W) min 127.S max -128.S asTypeOf SInt(8.W)
+    Mux(shiftAm >= 0.S, in1 << shiftAm.asUInt, in1 >> (-shiftAm).asUInt) 
+  }
+
+  outS := Mux1H(Seq(
+    (op === Load) -> (in2),
+    (op === Mul)  -> (in1  *  in2)(63, 0).asTypeOf(outS),
+    (op === Add)  -> (in1  +  in2),
+    (op === Sub)  -> (in1  -  in2),
+    (op === Div)  -> (in1  /  in2),
+    (op === Rem)  -> (in1  %  in2),
+    (op === And)  -> (in1  &  in2),
+    (op === Or)   -> (in1  |  in2),
+    (op === Eq)   -> Cat(0.U(63.W), in1 === in2).asTypeOf(outS),
+    (op === Ne)   -> Cat(0.U(63.W), in1 =/= in2).asTypeOf(outS),
+    (op === Ge)   -> Cat(0.U(63.W), in1  >= in2).asTypeOf(outS),
+    (op === Lt)   -> Cat(0.U(63.W), in1  <  in2).asTypeOf(outS),
+    (op === Lsl)  -> (lslOut(63, 0).asTypeOf(outS)),
+  ))
+
+  out.t := MuxCase(TSigned, Seq(
+    (op === Eq) -> TUnsigned,
+    (op === Ne) -> TUnsigned,
+    (op === Ge) -> TUnsigned,
+    (op === Lt) -> TUnsigned
+  ))
+  
+}package es.tmoor.dynarch.hardware
+package comb.alu
+
+import chisel3._
+import chisel3.util.Mux1H
+import chisel3.util.MuxCase
+import chisel3.util.Cat
+
+class Unsigned extends Module {
+  val io = IO(new Bundle {
+    val in1 = Input (UInt(64.W))
+    val in2 = Input (UInt(64.W))
+    val op  = Input (UInt( 4.W))
+    val out = Output(new Typed)
+  })
+
+  import io._, Const._
+  
+  out.t := TUnsigned
+
+  def lslOut = {
+    def shiftAm = in2 asTypeOf SInt(64.W) min 127.S max -128.S asTypeOf SInt(8.W)
+    Mux(shiftAm >= 0.S, in1 << shiftAm.asUInt, in1 >> (-shiftAm).asUInt)
+  }
+
+  out.d := Mux1H(Seq(
+    (op === Load) -> (in2),
+    (op === Mul)  -> (in1  *  in2)(63, 0),
+    (op === Add)  -> (in1  +  in2),
+    (op === Sub)  -> (in1  -  in2),
+    (op === Div)  -> (in1  /  in2),
+    (op === Rem)  -> (in1  %  in2),
+    (op === And)  -> (in1  &  in2),
+    (op === Or)   -> (in1  |  in2),
+    (op === Eq)   -> Cat(0.U(63.W), in1 === in2),
+    (op === Ne)   -> Cat(0.U(63.W), in1 =/= in2),
+    (op === Ge)   -> Cat(0.U(63.W), in1  >= in2),
+    (op === Lt)   -> Cat(0.U(63.W), in1  <  in2),
+    (op === Lsl)  -> (lslOut(63, 0)),
+  ))
+
+  
+}package es.tmoor.dynarch.hardware
+package comb
+
+import chisel3._
+import chisel3.util.Cat
+
+class CPU(addrW: Int) extends Module {
+  import Const._
+
+  val io = IO(new Bundle {
+    val bus = new WishboneMaster(16, addrW, 2)
+    val memSize = Input(UInt(32.W))
+  })
+  val acc = Reg(new Typed)
+  val reg = Module(new RegFile)
+  val alu = Module(new comb.ALU)
+  val pc = RegInit(ResetVector)
+  val sp = RegInit(ResetVector + io.memSize)
+
+  val mAddr = Reg(UInt(32.W))
+  io.bus.addr := mAddr
+  val byteEnable = Reg(UInt(2.W))
+  io.bus.sel := byteEnable
+
+  val dataR = RegInit(0.B)
+  val dataW = RegInit(0.B)
+
+  val dataRW = dataR | dataW
+  io.bus.cyc := dataRW
+  io.bus.stb := dataRW
+
+  io.bus.we := dataW
+  
+  val fetch = RegInit(1.B)
+  val decode = RegInit(0.B)
+  val dataWait = RegInit(0.B)
+  val exec = RegInit(0.B)
+  val jump = RegInit(0.B)
+  val writeback = RegInit(0.B)
+
+  val opcode = io.bus.datI(15, 12)
+  val typecode = io.bus.datI(9, 8)
+  val isLiteral = io.bus.datI(11, 10) === "b00".U
+  val isStack = io.bus.datI(11, 10) === "b01".U
+  val isReg = io.bus.datI(11, 10) === "b10".U
+  val isRef = io.bus.datI(11, 10) === "b11".U
+
+  alu.io.in1 := acc
+  alu.io.op := opcode
+
+  val d2 = 0.U(64.W)
+  val t2 = 0.U(3.W)
+
+  alu.io.in2.d := d2
+  alu.io.in2.t := t2  
+  
+  when (fetch) {
+    dataR := 1.B
+    dataW := 0.B
+    mAddr := pc
+
+    fetch := 0.B
+    decode := 1.B
+    dataWait := 0.B
+    exec := 0.B
+    jump := 0.B
+    writeback := 0.B
+  }
+
+  when (decode) {
+    fetch := 0.B
+    decode := 0.B
+    dataWait := 0.B
+    exec := 0.B
+    jump := 0.B
+    writeback := 0.B
+  }
+
+  when (dataWait) {
+    fetch := 0.B
+    decode := 0.B
+    dataWait := 0.B
+    exec := 0.B
+    jump := 0.B
+    writeback := 0.B
+  }
+
+  when (exec) {
+    acc := alu.io.out
+
+    fetch := 1.B
+    decode := 0.B
+    dataWait := 0.B
+    exec := 0.B
+    jump := 0.B
+    writeback := 0.B
+  }
+
+  when (jump) {
+    pc := d2
+
+    fetch := 1.B
+    decode := 0.B
+    dataWait := 0.B
+    exec := 0.B
+    jump := 0.B
+    writeback := 0.B
+  }
+
+  when (writeback) {
+    fetch := 1.B
+    decode := 0.B
+    dataWait := 0.B
+    exec := 0.B
+    jump := 0.B
+    writeback := 0.B
+  }
+
+}package es.tmoor.dynarch.hardware
+import chisel3._
+
+object Const {
+  final val ResetVector = 0x40000000.U
+
+  final val Load = "b0000".U(4.W)
+  final val Mul  = "b0001".U(4.W)
+  final val Add  = "b0010".U(4.W)
+  final val Sub  = "b0011".U(4.W)
+  final val Div  = "b0100".U(4.W)
+  final val Rem  = "b0101".U(4.W)
+  final val Eq   = "b0110".U(4.W)
+  final val Ne   = "b0111".U(4.W)
+  final val Ge   = "b1000".U(4.W)
+  final val Lt   = "b1001".U(4.W)
+  final val Jump = "b1010".U(4.W)
+  final val BNez = "b1011".U(4.W)
+  final val Put  = "b1100".U(4.W)
+  final val Lsl  = "b1101".U(4.W)
+  final val And  = "b1110".U(4.W)
+  final val Or   = "b1111".U(4.W)
+
+  
+  final val TSigned   = "b00".U(2.W)
+  final val TUnsigned = "b01".U(2.W)
+  final val TFloat    = "b10".U(2.W)
+  final val TDouble   = "b11".U(2.W)
+  
+  final val W08 = "b00".U(2.W)
+  final val W16 = "b01".U(2.W)
+  final val W32 = "b10".U(2.W)
+  final val W64 = "b11".U(2.W)
+}
+package es.tmoor.dynarch.hardware
+
+import chisel3._
+
+class DynTop(addrW: Int) extends Module {
+  val cpu = Module(new comb.CPU(addrW))
+}package es.tmoor.dynarch.hardware
+import chisel3._
+
+class RegFile extends Module {
+  val io = IO(new Bundle {
+    val wrEn = Input(Bool())
+    val addr = Input(UInt(8.W))
+    val dataIn = Input(UInt(64.W))
+    val dataOut = Output(UInt(64.W))
+  })
+  
+  val reg = Reg(Vec(128, UInt(64.W)))
+}package es.tmoor.dynarch.hardware
+import chisel3._
+import Const._
+
+class Typed extends Bundle {
+  val d = UInt(64.W)
+  val t = UInt(2.W)
+  def isFloat    = t === TFloat
+  def isDouble   = t === TDouble
+  def isSigned   = t === TSigned
+  def isUnsigned = t === TUnsigned
+  def isInt = t(0)
+}package es.tmoor.dynarch.hardware
+import chisel3._
+
+sealed abstract class Wishbone(dataWidth: Int) extends Bundle {
+  val datI = Input(UInt(dataWidth.W))
+  val datO = Output(UInt(dataWidth.W))
+  val addr: UInt
+  val we: Bool
+  val sel: UInt
+  val stb: Bool
+  /** Waitrequest */
+  val ack: Bool
+  val cyc: Bool
+}
+
+class WishboneMaster(dataWidth: Int, addrWidth: Int, selWidth: Int = 1) extends Wishbone(dataWidth) {
+  val addr = Output(UInt(addrWidth.W))
+  val we = Output(Bool())
+  val sel = Output(UInt(selWidth.W))
+  val stb = Output(Bool())
+  /** Waitrequest */
+  val ack = Input(Bool())
+  val cyc = Output(Bool())
+}
+
+class WishboneSlave(dataWidth: Int, addrWidth: Int, selWidth: Int = 1) extends Wishbone(dataWidth) {
+  val addr = Input(UInt(addrWidth.W))
+  val we = Input(Bool())
+  val sel = Input(UInt(selWidth.W))
+  val stb = Input(Bool())
+  val ack = Output(Bool())
+  val cyc = Input(Bool())
+}
+import es.tmoor.dynarch.hardware._
+
+object Main extends App {
+  (new chisel3.stage.ChiselStage).execute(
+    Array("-X", "verilog"),
+    Seq(
+      chisel3.stage.ChiselGeneratorAnnotation(() => new comb.ALU)
+    )
+  )
+}import chisel3._
+import chiseltest._
+import org.scalatest.flatspec.AnyFlatSpec
+import scala.util.Random
+import es.tmoor.dynarch.hardware.Const._
+import es.tmoor.dynarch.hardware.comb
+
+class SignedALUTest extends AnyFlatSpec with ChiselScalatestTester {
+  behavior of "Signed ALU"
+
+  final val NInputs = 10
+
+  def testSigned(in1: Long, in2: Long, opcode: UInt, expected: Long) = (alu: comb.ALU) => {
+    alu.io.in1.d.poke(in1.S(63, 0))
+    alu.io.in2.d.poke(in2.S(63, 0))
+    alu.io.in1.t.poke(TSigned)
+    alu.io.in2.t.poke(TSigned)
+    alu.io.op.poke(opcode)
+    alu.clock.step()
+    // alu.io.out.t.expect(TUnsigned)
+    alu.io.out.d.expect(expected.S(63, 0))
+  }
+  
+  implicit class ExpTOps(x: Long) {
+    def toExp = BigInt(x)
+    def #+(that: ExpTOps) = (this.toExp + that.toExp).toLong
+    def #-(that: ExpTOps) = (this.toExp - that.toExp).toLong
+    def #*(that: ExpTOps) = (this.toExp * that.toExp).toLong
+    def #%(that: ExpTOps) = (this.toExp % that.toExp).toLong
+    def #/(that: ExpTOps) = (this.toExp / that.toExp).toLong
+    def #==(that: ExpTOps) = if (this.toExp == that.toExp) 1L else 0L
+    def #!=(that: ExpTOps) = if (this.toExp != that.toExp) 1L else 0L
+    def #>=(that: ExpTOps) = if (this.toExp >= that.toExp) 1L else 0L
+    def #<(that: ExpTOps) = if (this.toExp < that.toExp) 1L else 0L
+    def #|(that: ExpTOps) = (this.toExp | that.toExp).toLong
+    def #&(that: ExpTOps) = (this.toExp & that.toExp).toLong
+    def #<<(that: Long) = (if (that >= 0) this.toExp << that.toInt else this.toExp >> (-that).toInt).toLong
+  }
+  
+  it should "Multiply SInts" in {
+    val inputs = Seq.fill(NInputs)((Random.nextLong(), Random.nextLong()))
+    for ((x,y) <- inputs) test(new comb.ALU)(testSigned(x, y, Mul, (x #* y)))
+  }
+  it should "Add SInts" in {
+    val inputs = Seq.fill(NInputs)((Random.nextLong(), Random.nextLong()))
+    for ((x,y) <- inputs) test(new comb.ALU)(testSigned(x, y, Add, (x #+ y)))
+  }
+  
+  it should "Subtract SInts" in {
+    val inputs = Seq.fill(NInputs)((Random.nextLong(), Random.nextLong()))
+    for ((x,y) <- inputs) test(new comb.ALU)(testSigned(x, y, Sub, (x #- y)))
+  }
+  
+  it should "Divide SInts" in {
+    val inputs = Seq.fill(NInputs)((Random.nextLong(), Random.nextLong()))
+    for ((x,y) <- inputs) {
+      test(new comb.ALU)(testSigned(x, y, Div, x #/ y))
+    }
+  }
+  
+  it should "Remainder SInts" in {
+    val inputs = Seq.fill(NInputs)((Random.nextLong(), Random.nextLong()))
+    for ((x,y) <- inputs) {
+      test(new comb.ALU)(testSigned(x, y, Rem, (x #% y)))
+    }
+  }
+  
+  it should "Equals SInts" in {
+    val inputs = Seq.fill(NInputs)((Random.nextLong(), Random.nextLong()))
+    for ((x,y) <- inputs) test(new comb.ALU)(testSigned(x, y, Eq, x #== y))
+  }
+
+  it should "Not Equals SInts" in {
+    val inputs = Seq.fill(NInputs)((Random.nextLong(), Random.nextLong()))
+    for ((x,y) <- inputs) test(new comb.ALU)(testSigned(x, y, Ne, x #!= y))
+  }
+  
+  it should "Greater or Equal SInts" in {
+    val inputs = Seq.fill(NInputs)((Random.nextLong(), Random.nextLong()))
+    for ((x,y) <- inputs) test(new comb.ALU)(testSigned(x, y, Ge, x #>= y))
+  }
+
+  it should "Less Than UInts" in {
+    val inputs = Seq.fill(NInputs)((Random.nextLong(), Random.nextLong()))
+    for ((x,y) <- inputs) test(new comb.ALU)(testSigned(x, y, Lt, x #< y))
+  }
+
+  it should "Logic Shift SInts" in {
+    val inputs = Seq.fill(NInputs)(Random.nextLong(), Random.between(-128L, 127L))
+    for ((x,y) <- inputs) {
+      test(new comb.ALU)(testSigned(x, y, Lsl, x #<< y))
+    }
+  }
+
+  it should "And SInts" in {
+    val inputs = Seq.fill(NInputs)((Random.nextLong(), Random.nextLong()))
+    for ((x,y) <- inputs) test(new comb.ALU)(testSigned(x, y, And, x #& y))
+  }
+
+  it should "Or SInts" in {
+    val inputs = Seq.fill(NInputs)((Random.nextLong(), Random.nextLong()))
+    for ((x,y) <- inputs) test(new comb.ALU)(testSigned(x, y, Or, x #| y))
+  }
+}import chisel3._
+import chiseltest._
+import org.scalatest.flatspec.AnyFlatSpec
+import scala.util.Random
+import es.tmoor.dynarch.hardware.Const._
+import es.tmoor.dynarch.hardware.comb
+
+class UnsignedALUTest extends AnyFlatSpec with ChiselScalatestTester {
+  behavior of "Unsigned ALU"
+
+  final val NInputs = 10
+
+  def testUnsigned(in1: Long, in2: Long, opcode: UInt, expected: Long) = (alu: comb.ALU) => {
+    alu.io.in1.d.poke(in1.S(63, 0))
+    alu.io.in2.d.poke(in2.S(63, 0))
+    alu.io.in1.t.poke(TUnsigned)
+    alu.io.in2.t.poke(TUnsigned)
+    alu.io.op.poke(opcode)
+    alu.clock.step()
+    alu.io.out.t.expect(TUnsigned)
+    alu.io.out.d.expect(expected.S(63, 0))
+  }
+  
+  implicit class ExpTOps(x: Long) {
+    def toExp = BigInt(0.toByte +: BigInt(x).toByteArray)
+    def #+(that: ExpTOps) = (this.toExp + that.toExp).toLong
+    def #-(that: ExpTOps) = (this.toExp - that.toExp).toLong
+    def #*(that: ExpTOps) = (this.toExp * that.toExp).toLong
+    def #%(that: ExpTOps) = (this.toExp % that.toExp).toLong
+    def #/(that: ExpTOps) = (this.toExp / that.toExp).toLong
+    def #==(that: ExpTOps) = if (this.toExp == that.toExp) 1L else 0L
+    def #!=(that: ExpTOps) = if (this.toExp != that.toExp) 1L else 0L
+    def #>=(that: ExpTOps) = if (this.toExp >= that.toExp) 1L else 0L
+    def #<(that: ExpTOps) = if (this.toExp < that.toExp) 1L else 0L
+    def #<<(that: Long) = (if (that >= 0) this.toExp << that.toInt else this.toExp >> (-that).toInt).toLong
+    def #|(that: ExpTOps) = (this.toExp | that.toExp).toLong
+    def #&(that: ExpTOps) = (this.toExp & that.toExp).toLong
+  }
+  
+  
+  it should "Multiply UInts" in {
+    val inputs = Seq.fill(NInputs)((Random.nextLong(), Random.nextLong()))
+    for ((x,y) <- inputs) test(new comb.ALU)(testUnsigned(x, y, Mul, (x #* y)))
+  }
+  it should "Add UInts" in {
+    val inputs = Seq.fill(NInputs)((Random.nextLong(), Random.nextLong()))
+    for ((x,y) <- inputs) test(new comb.ALU)(testUnsigned(x, y, Add, (x #+ y)))
+  }
+  
+  it should "Subtract UInts" in {
+    val inputs = Seq.fill(NInputs)((Random.nextLong(), Random.nextLong()))
+    for ((x,y) <- inputs) test(new comb.ALU)(testUnsigned(x, y, Sub, (x #- y)))
+  }
+  
+  it should "Divide UInts" in {
+    val inputs = Seq.fill(NInputs)((Random.nextLong(), Random.nextLong()))
+    for ((x,y) <- inputs) {
+      test(new comb.ALU)(testUnsigned(x, y, Div, x #/ y))
+    }
+  }
+  
+  it should "Remainder UInts" in {
+    val inputs = Seq.fill(NInputs)((Random.nextLong(), Random.nextLong()))
+    for ((x,y) <- inputs) {
+      test(new comb.ALU)(testUnsigned(x, y, Rem, (x #% y)))
+    }
+  }
+  
+  it should "Equals UInts" in {
+    val inputs = Seq.fill(NInputs)((Random.nextLong(), Random.nextLong()))
+    for ((x,y) <- inputs) test(new comb.ALU)(testUnsigned(x, y, Eq, x #== y))
+  }
+
+  it should "Not Equals UInts" in {
+    val inputs = Seq.fill(NInputs)((Random.nextLong(), Random.nextLong()))
+    for ((x,y) <- inputs) test(new comb.ALU)(testUnsigned(x, y, Ne, x #!= y))
+  }
+  
+  it should "Greater or Equal UInts" in {
+    val inputs = Seq.fill(NInputs)((Random.nextLong(), Random.nextLong()))
+    for ((x,y) <- inputs) test(new comb.ALU)(testUnsigned(x, y, Ge, x #>= y))
+  }
+
+  it should "Less Than UInts" in {
+    val inputs = Seq.fill(NInputs)((Random.nextLong(), Random.nextLong()))
+    for ((x,y) <- inputs) test(new comb.ALU)(testUnsigned(x, y, Lt, x #< y))
+  }
+
+  it should "Logic Shift UInts" in {
+    val inputs = Seq.fill(NInputs)(Random.nextLong(), Random.between(-128L, 127L))
+    for ((x,y) <- inputs) {
+      test(new comb.ALU)(testUnsigned(x, y, Lsl, x #<< y))
+    }
+  }
+
+  it should "And UInts" in {
+    val inputs = Seq.fill(NInputs)((Random.nextLong(), Random.nextLong()))
+    for ((x,y) <- inputs) test(new comb.ALU)(testUnsigned(x, y, And, x #& y))
+  }
+
+  it should "Or UInts" in {
+    val inputs = Seq.fill(NInputs)((Random.nextLong(), Random.nextLong()))
+    for ((x,y) <- inputs) test(new comb.ALU)(testUnsigned(x, y, Or, x #| y))
+  }
+}package es.tmoor.dynarch
+import es.tmoor.dynarch.Types._
+import java.lang.Double.doubleToLongBits
+
+object Assembler {
+  def b(s: String) =
+    s.map(_ - '0').reduce((x,y) => (x << 1) + y).toByte
+  def op(s: String): Byte = b(s ++ "0000")
+  def run(sts: Seq[Operation]) =
+    new Assembler(sts).assemble()
+}
+class Assembler(sts: Seq[Operation]) {
+  import Assembler.{b, op}
+
+  def encodeInt(i: Long): Seq[Byte] = {
+    val arr = BigInt(i).toByteArray.toSeq
+    arr.length match {
+      case 1 => b("0010") +: arr
+      case 2 => b("0011") +: arr
+      case 3 => b("0000") +: b("0") +: arr
+      case 4 => b("0000") +: arr
+      case 5 => b("0001") +: b("0") +: b("0") +: b("0") +: arr
+      case 6 => b("0001") +: b("0") +: b("0") +: arr
+      case 7 => b("0001") +: b("0") +: arr
+      case 8 => b("0001") +: arr
+      case _ => sys.error(s"Unexpected literal $i")
+    }
+  }
+
+  def encodeFloat(f: Double): Seq[Byte] = {
+    b("0101") +: BigInt(doubleToLongBits(f)).toByteArray.reverse.padTo(8, 0.toByte).reverse.toSeq
+  }
+
+  def encodeStack(s: Long, t: Type): Seq[Byte] = Seq(0)
+
+  def encodeRef(r: Byte, t: Type) =
+    t match {
+      case S8  => Seq(b("1110"), (b("10000000") | r).toByte)
+      case S16 => Seq(b("1111"), (b("10000000") | r).toByte)
+      case S32 => Seq(b("1100"), (b("10000000") | r).toByte)
+      case S64 => Seq(b("1101"), (b("10000000") | r).toByte)
+      case F32 => Seq(b("1100"), (b("10000000") | r).toByte)
+      case F64 => Seq(b("1101"), (b("10000000") | r).toByte)
+      case Keep => sys.error(s"Unexpected KEEP for x$r")
+      case _ => sys.error(s"Invalid (due to Sign Ext): Unsigned reference $t")
+    }
+
+  def encodeReg(r: Byte): Seq[Byte] =
+    Seq(b("1111"), (b("10000000") | r).toByte)
+
+  def asValue(op: Byte, v: Value): Seq[Byte] =
+    val nv = v match {
+      case IntLiteral(i)   => encodeInt(i)
+      case FloatLiteral(f) => encodeFloat(f)
+      case Stack(s, t)     => encodeStack(s, t)
+      case Reference(r, t) => encodeRef(r, t)
+      case Register(r)     => encodeReg(r)
+    }
+    (nv.head | op).toByte +: nv.tail
+  
+  def asType(op: Byte, t: Type): Seq[Byte] =
+    t match {
+      // TODO: Maybe add 0 byte, so that <1 instructions get done at once
+      case S8  => Seq((op | b("0010")).toByte)
+      case S16 => Seq((op | b("0011")).toByte)
+      case S32 => Seq((op | b("0000")).toByte)
+      case S64 => Seq((op | b("0001")).toByte)
+      case U8  => Seq((op | b("0110")).toByte)
+      case U16 => Seq((op | b("0111")).toByte)
+      case U32 => Seq((op | b("0100")).toByte)
+      case U64 => Seq((op | b("0101")).toByte)
+      case F32 => Seq((op | b("1000")).toByte)
+      case F64 => Seq((op | b("1001")).toByte)
+      case Keep => sys.error("Can't convert to type KEEP")
+    }
+
+  def assemble(i: Int = 0): Seq[(Operation, Seq[Byte])] =
+    if (i >= sts.length) Nil
+    else
+      (sts(i), sts(i) match {
+        case Load(v) =>
+          asValue(op("0000"), v)
+        case Mul(v)  =>
+          asValue(op("0001"), v)
+        case Add(v)  =>
+          asValue(op("0010"), v)
+        case Sub(v)  =>
+          asValue(op("0011"), v)
+        case Div(v)  =>
+          asValue(op("0100"), v)
+        case Rem(v)  =>
+          asValue(op("0101"), v)
+        case Xor(v)  =>
+          asValue(op("0110"), v)
+        case Goto(v) =>
+          sys.error(s"NOTIMPL: goto($v)")
+          Nil
+        case Call(v) =>
+          sys.error(s"NOTIMPL: call($v)")
+          Nil
+        case BNez(v) =>
+          sys.error(s"NOTIMPL: bnez($v)")
+          Nil
+        case Ret     =>
+          sys.error(s"NOTIMPL: return")
+          Nil
+        case Ge(v)   =>
+          asValue(op("1000"), v)
+        case Lt(v)   =>
+          asValue(op("1001"), v)
+        case TCst(t) =>
+          asType(op("1010"), t)
+        case TCnv(t) =>
+          asType(op("1011"), t)
+        case Put(v)  =>
+          asValue(op("1100"), v)
+        case Lsl(v)  =>
+          asValue(op("1101"), v)
+        case And(v)  =>
+          asValue(op("1110"), v)
+        case Or(v)   =>
+          asValue(op("1111"), v)
+      }) +: assemble(i+1)
+}package es.tmoor.dynarch
+import Parser._
+
+class Disassembler {
+}package es.tmoor.dynarch
+import Parser._
+import collection.mutable.Buffer
+import scala.reflect._
+import java.lang.Double.{doubleToLongBits, longBitsToDouble}
+import java.lang.Float.{floatToIntBits, intBitsToFloat}
+
+object Interpreter {
+  /*
+  sealed abstract class RTValue[T](val t: Type)(implicit val num: Numeric[T]) {
+    import num._
+    val value: T
+    def upgradeF32 = RF32(value.toFloat)
+    def upgradeF64 = RF64(value.toDouble)
+    def upgradeI64 = RI64(value.toLong)
+
+    def asMemAddr: Int
+    def div: (T,T) => T
+    def rem: (T,T) => T
+    
+    type CastT = [T <: Type] =>> T match {
+      case I8.type => RI8
+      case I16.type => RI16
+      case I32.type => RI32
+      case I64.type => RI64
+      case F32.type => RF32
+      case F64.type => RF64
+    }
+
+    def asI64: Long
+    def cast[T <: Type : ClassTag]: CastT[T] = 
+      (classTag[T].runtimeClass match {
+        case `i8_t` => RI8(asI64.toByte)
+        case `i16_t` => RI16(asI64.toShort)
+        case `i32_t` => RI32(asI64.toInt)
+        case `i64_t` => RI64(asI64)
+        case `f32_t` => RF32(intBitsToFloat(asI64.toInt))
+        case `f64_t` => RF64(longBitsToDouble(asI64))
+      }).asInstanceOf[CastT[T]]
+  }
+  type BaseType[T] = (RF64 & RTValue[T] | RF32 & RTValue[T] | RI64 & RTValue[T])
+  def arithmeticOp[T](pair: (BaseType[T], BaseType[T]), op: (T, T) => T) =
+    pair._1.getClass.getConstructors.head.newInstance(op(pair._1.value, pair._2.value)).asInstanceOf[BaseType[T]]
+    
+  def booleanOp[T](pair: (BaseType[T], BaseType[T]), op: (T, T) => Boolean): RI64 =
+    if (op(pair._1.value, pair._2.value)) RI64(1) else RI64(0)
+
+  def mul[T](pair: (BaseType[T], BaseType[T])): BaseType[T] = arithmeticOp(pair, pair._1.num.times)
+  def add[T](pair: (BaseType[T], BaseType[T])): BaseType[T] = arithmeticOp(pair, pair._1.num.plus)
+  def sub[T](pair: (BaseType[T], BaseType[T])): BaseType[T] = arithmeticOp(pair, pair._1.num.minus)
+  def div[T](pair: (BaseType[T], BaseType[T])): BaseType[T] = arithmeticOp(pair, pair._1.div)
+
+
+  def rem[T](pair: (BaseType[T], BaseType[T])): BaseType[T] = arithmeticOp(pair, pair._1.rem)
+  def eq_[T](pair: (BaseType[T], BaseType[T])): RI64 = booleanOp(pair, pair._1.num.equiv)
+  def ne_[T](pair: (BaseType[T], BaseType[T])): RI64 = booleanOp(pair, pair._1.num.equiv)
+  def ge[T](pair: (BaseType[T], BaseType[T])): RI64 = booleanOp(pair, pair._1.num.gteq)
+  def lt[T](pair: (BaseType[T], BaseType[T])): RI64 = booleanOp(pair, pair._1.num.gteq)  
+
+  sealed abstract class RTInt[T](t: Type)(implicit num: Integral[T]) extends RTValue[T](t: Type) {
+    def asMemAddr: Int = upgradeI64.value.toInt
+    def div = num.quot
+    def rem = num.rem
+    import num._
+  }
+
+  private val i8_t = classOf[I8.type]
+  private val i16_t = classOf[I16.type]
+  private val i32_t = classOf[I32.type]
+  private val i64_t = classOf[I64.type]
+  private val f32_t = classOf[F32.type]
+  private val f64_t = classOf[F64.type]
+  sealed abstract class RTFloat[T](t: Type)(implicit num: Fractional[T]) extends RTValue[T](t: Type) {
+    def div = num.div
+  }
+  case class RI8(value: Byte) extends RTInt[Byte](I8) {
+    def asI64 = (value | 0L)
+  }
+  case class RI16(value: Short) extends RTInt[Short](I16) {
+    def asI64 = (value | 0L)
+  }
+  case class RI32(value: Int) extends RTInt[Int](I32) {
+    def asI64 = (value | 0L)
+  }
+  case class RI64(value: Long) extends RTInt[Long](I64) {
+    def asI64 = (value | 0L)
+  }
+  case class RF32(value: Float) extends RTFloat[Float](F32) {
+    
+    def rem = (a,b) => a%b
+    def asMemAddr: Int = {
+      println(s"Attempt to dereference float: $this - casting to int")
+      floatToIntBits(value)
+    }
+    def asI64 = floatToIntBits(value) | 0L
+  }
+  case class RF64(value: Double) extends RTFloat[Double](F64) {
+    
+    def rem = (a,b) => a%b
+    def asMemAddr: Int = {
+      println(s"Attempt to dereference double: $this - casting to int")
+      doubleToLongBits(value).toInt
+    }
+    def asI64 = doubleToLongBits(value)
+  }
+}
+
+class Interpreter {
+  import Interpreter._
+
+  var acc: RTValue[?] = RI64(0l)
+  val reg: Array[RTValue[?]] = Array.fill(256)(RI64(0l))
+  val mem: Buffer[Byte] = Buffer()
+  var sp = 0
+
+  def getMem(at: Int, t: Type): RTValue[?] = t match {
+    case Keep =>
+      getMem(at, acc.t)
+    case I32 =>
+    RI32(mem.slice(at, at + 5).map(_ & 0xFF).reduceRight((v,acc) => (acc << 8) + v))
+    case I64 =>
+      RI64(mem.slice(at, at + 9).map(_ & 0xFFL).reduceRight((v,acc) => (acc << 8) + v))
+    case F32 =>
+      RF32(intBitsToFloat(mem.slice(at, at + 5).map(_ & 0xFF).reduceRight((v,acc) => (acc << 8) + v)))
+    case F64 => 
+      RF64(longBitsToDouble(mem.slice(at, at + 9).map(_ & 0xFFL).reduceRight((v,acc) => (acc << 8) + v)))
+    case _ =>
+      sys.error(s"Get mem of type $t Not Implemented")
+  }
+
+  def setMem(at: Int, t: Type): Unit = {
+    while (mem.size < at + 8) mem += 0.toByte
+    t match {
+      case Keep =>
+        println(s"Keeping T")
+        setMem(at, acc.t)
+      case I8 =>
+        val data = acc.cast[I8.type].value
+        mem(at) = data.toByte
+      case I16 =>
+        val data = acc.cast[I16.type].value
+        mem(at) = data.toByte
+        mem(at + 1) = (data >>> 8).toByte
+      case I32 | F32 =>
+        val data = acc.cast[I32.type].value
+        mem(at) = data.toByte
+        mem(at + 1) = (data >>> 8).toByte
+        mem(at + 2) = (data >>> 16).toByte
+        mem(at + 3) = (data >>> 24).toByte
+      case I64 | F64 => 
+        val data = acc.cast[I64.type].value
+        mem(at) = data.toByte
+        mem(at + 1) = (data >>> 8).toByte
+        mem(at + 2) = (data >>> 16).toByte
+        mem(at + 3) = (data >>> 24).toByte
+        mem(at + 4) = (data >>> 32).toByte
+        mem(at + 5) = (data >>> 40).toByte
+        mem(at + 6) = (data >>> 48).toByte
+        mem(at + 7) = (data >>> 56).toByte
+    }
+    println(s"After set at $at of T: $t")
+    println(mem)
+  }
+
+  def runtime(v: Value): RTValue[?] = v match {
+    case FloatLiteral(value) => RF64(value)
+    case IntLiteral(value) => RI64(value)
+    case Register(id) => reg(id.toInt)
+    case Reference(to, t) =>
+      val v = reg(to)
+      if (!v.isInstanceOf[RTInt[?]]) println(s"Reg $to is not Int. Casting to Int.")
+      getMem(v.asMemAddr, t)
+    case Stack(at, t) =>
+      getMem(sp + at, t)
+  }
+
+  /*
+  def upgrade[Upgrader[T]] = (v1: RTValue[T1], v2: RTValue[T2]) => (v1, v2) match {
+      case (_: RF64, _) | (_, _: RF64) => (v1.upgradeF64, v2.upgradeF64)
+      case (_: RF32, _) | (_, _: RF32) => (v1.upgradeF32[ArithmeticType[TR]], v2.upgradeF32[ArithmeticType[TR]])
+      case (_, _) => (v1.upgradeI64[ArithmeticType[TR]], v2.upgradeI64[ArithmeticType[TR]])
+  }
+  */
+
+  def upgrade[T <: (RI64, RI64) | (RF64, RF64) | (RF32, RF32)](v1: RTValue[?], v2: RTValue[?]): T = {
+    (v1.t, v2.t) match {
+      case (F64, _) | (_, F64) => (v1.upgradeF64, v2.upgradeF64).asInstanceOf[T]
+      case (F32, _) | (_, F32) => (v1.upgradeF32, v2.upgradeF32).asInstanceOf[T]
+      case (_, _) => (v1.upgradeI64, v2.upgradeI64).asInstanceOf[T]
+    }
+  }
+  def interpret(prog: Seq[Operation]): Unit =
+    if (!prog.isEmpty) {
+      println(s"Acc: $acc")
+      //println(s"Mem: $mem")
+      //println(s"Reg: ${reg.toSeq}")
+      println(prog.head)
+      type T1
+      type T2 = (BaseType[T1], BaseType[T1]) & ((RI64, RI64) | (RF64, RF64) | (RF32, RF32))
+      prog.head match {
+        case Load(v) => acc = runtime(v)
+        case Mul(v) => acc = mul(upgrade[T2](acc, runtime(v)))
+        case Add(v) => acc = add(upgrade[T2](acc, runtime(v)))
+        case Sub(v) => acc = sub(upgrade[T2](acc, runtime(v)))
+        case Div(v) => acc = div(upgrade[T2](acc, runtime(v)))
+        case Rem(v) => acc = rem(upgrade[T2](acc, runtime(v)))
+        case Eq(v) => acc = eq_(upgrade[T2](acc, runtime(v)))
+        case Ne(v) => acc = ne_(upgrade[T2](acc, runtime(v)))
+        case Ge(v) => acc = ge(upgrade[T2](acc, runtime(v)))
+        case Lt(v) => acc = lt(upgrade[T2](acc, runtime(v)))
+        case Jump(to) => sys.error(s"Jump to $to unimplemented")
+        case BNez(to) => sys.error(s"BNez to $to unimplemented")
+        case And(v) => sys.error(s"And $v unimplemented")
+        case Or(v) => sys.error(s"Or $v unimplemented")
+        case Lsl(v) => sys.error(s"Lsl by $v unimplemented")
+        case Put(Register(id)) =>
+          reg(id) = acc
+        case Put(Reference(id, t)) =>
+          val v = reg(id)
+          if (!v.isInstanceOf[RI32]) Console.err.println(s"Reg $id is not I32. Casting to I32.")
+          setMem(v.asMemAddr, t)
+        case Put(Stack(at, t)) =>
+          setMem(sp + at, t)
+      }
+      interpret(prog.tail)
+    }
+    */
+}package es.tmoor.dynarch
+
+import scala.util.matching.Regex
+import scala.reflect.ClassTag
+import Types._
+
+object Parser extends util.parsing.combinator.RegexParsers {
+  override def skipWhitespace: Boolean = true
+  
+  def intType = {
+    U8.p | U16.p | U32.p | U64.p | S8.p | S16.p | S32.p | S64.p
+  }
+
+  def floatType = F32.p | F64.p
+  
+  def typeSpecifier = intType | floatType
+  
+  def intLiteral = "(-?)[0-9]+".r ^^ (IntLiteral apply _.toLong)
+  def floatLiteral = """(-?)[0-9]+\.[0-9]+""".r ^^ (FloatLiteral apply _.toDouble)
+  def lit = floatLiteral | intLiteral
+
+  def register = "x" ~> "[0-9]+".r ^^ (Register apply _.toInt.toByte)
+  def stack = (typeSpecifier <~ "@").? ~ ("y" ~> "[0-9]+".r) ^^ {
+    case Some(t) ~ n => Stack(n.toInt.toByte, t)
+    case None ~ n => Stack(n.toInt.toByte, Keep)
+  }
+  def reference = (typeSpecifier <~ "@").? ~ ("[" ~> register <~ "]") ^^ {
+    case Some(t) ~ n => Reference(n.id, t)
+    case None ~ n => Reference(n.id, Keep)
+  }
+  def mem = stack | reference
+
+  def value = mem | register | lit
+
+  sealed abstract class Op1(operator: String, fn: Value => Operation) {
+    def apply(v: Value): Operation = fn(v)
+    def p = operator ~> value ^^ apply
+  }
+
+  object LoadP {
+    def p = value ^? {
+      case m: Memory if m.t.isInstanceOf[SizedType] => Load(m)
+      case v if !v.isInstanceOf[Memory] => Load(v)
+    }
+  }
+  object MulP extends Op1("*", Mul.apply)
+  object AddP extends Op1("+", Add.apply)
+  object SubP extends Op1("-", Sub.apply)
+  object DivP extends Op1("/", Div.apply)
+  object RemP extends Op1("%", Rem.apply)
+  object XorP extends Op1("~", Xor.apply)
+  object GeP extends Op1("≥", Ge.apply)
+  object LtP extends Op1("<", Lt.apply)
+  object CallP extends Op1("#", Call.apply)
+  object GotoP extends Op1("$", Goto.apply)
+  object BNezP extends Op1("?", BNez.apply)
+  object PutP {
+    def p = ":" ~> (mem | register) ^^ Put.apply
+  }
+  object LslP extends Op1("'", Lsl.apply)
+  object AndP extends Op1("&", And.apply)
+  object OrP extends Op1("|", Or.apply)
+  object TCnvP {
+    def p = "!" ~> typeSpecifier ^^ TCnv.apply
+  }
+  object TCstP {
+    def p = "\\" ~> typeSpecifier ^^ TCst.apply
+  }
+
+  def operation =
+    LoadP.p | MulP.p | AddP.p | SubP.p | DivP.p | RemP.p | XorP.p | 
+    LtP.p | GotoP.p | BNezP.p | PutP.p | LslP.p | AndP.p | OrP.p |
+    GeP.p |  TCstP.p |TCnvP.p | ("^" ^^^ Ret) | CallP.p
+}
+package es.tmoor.dynarch
+
+import Parser.Parser
+
+object Types {
+  sealed trait Type 
+  case object Keep extends Type
+  sealed abstract class SizedType(val size: Int, m: Parser[_]) extends Type {
+    def p: Parser[SizedType] = m ~ size.toString ^^^ this
+  }
+  sealed abstract class FloatType(size: Int) extends SizedType(size, "[fF]".r)
+  sealed abstract class UIntType(size: Int) extends SizedType(size, "[uU]".r)
+  sealed abstract class SIntType(size: Int) extends SizedType(size, "[sS]".r)
+  
+  sealed trait Value
+  sealed trait Storage extends Value
+  sealed trait Memory extends Storage {
+    val t: Type
+  }
+  sealed trait Literal extends Value
+  
+  case object U8 extends UIntType(8)
+  case object U16 extends UIntType(16)
+  case object U32 extends UIntType(32)
+  case object U64 extends UIntType(64)
+  case object S8 extends SIntType(8)
+  case object S16 extends SIntType(16)
+  case object S32 extends SIntType(32)
+  case object S64 extends SIntType(64)
+  case object F32 extends FloatType(32)
+  case object F64 extends FloatType(64)
+  
+  case class FloatLiteral(value: Double) extends Literal
+  case class IntLiteral(value: Long) extends Literal
+  case class Register(id: Byte) extends Storage
+  case class Stack(offset: Byte, t: Type) extends Memory
+  case class Reference(to: Byte, t: Type) extends Memory
+
+  sealed trait Operation
+
+  case class Load(v: Value) extends Operation
+  case class Mul(v: Value) extends Operation
+  case class Add(v: Value) extends Operation
+  case class Sub(v: Value) extends Operation
+  case class Div(v: Value) extends Operation
+  case class Rem(v: Value) extends Operation
+  case class Xor(v: Value) extends Operation
+  case class Ge(v: Value) extends Operation
+  case class Lt(v: Value) extends Operation
+  case class Call(to: Value) extends Operation
+  case class Goto(to: Value) extends Operation
+  case class BNez(to: Value) extends Operation
+  case class Put(to: Storage) extends Operation
+  case object Ret extends Operation
+  case class Lsl(v: Value) extends Operation
+  case class And(v: Value) extends Operation
+  case class Or(v: Value) extends Operation
+  case class TCnv(t: Type) extends Operation
+  case class TCst(t: Type) extends Operation
+
+
+
+}import es.tmoor.dynarch.Parser
+import es.tmoor.dynarch.Interpreter
+import es.tmoor.dynarch.Assembler
+import es.tmoor.dynarch.Disassembler
+import java.io._
+
+object Main extends App {
+  val input = new util.parsing.input.CharSequenceReader(
+"""
+5
++ 3
+* 32.5
+: x0
+15432911
+/ 1187147
+: x1
+x0
+' x1
+! U64
+\ S16
+: x2
+""")
+  val result = Parser.operation.+(input)
+  println(result)
+  result.map {l =>
+    println("Assembling")
+    val as = Assembler.run(l)
+    val bos = new BufferedOutputStream(new FileOutputStream("out.bin"))
+    println(as)
+    val asc = as.map(_._2).flatten
+    bos.write(asc.toArray)
+    bos.close
+    
+    //(new Interpreter).interpret(l)
+  }
+}package es.tmoor.usb
+
+import chisel3._
+import chisel3.util.Enum
+
+class FSM(states: String*) {
+  implicit def str2UInt(str: String): UInt = s(str)
+  val eStates = Enum(states.size)
+  val s = states.zip(eStates).toMap
+  val state = Reg(UInt(eStates.last.getWidth.W))
+}package es.tmoor.usb
+
+import chisel3._
+
+class TxPipeline extends Module {
+  val i = IO(new Bundle {
+    val oe = Input(Bool())
+    val iosg = Output(UInt(2.W))
+    val iosp = Output(UInt(8.W))
+  })
+  val stateGrey = Reg(UInt(2.W))
+  val syncPulse = Reg(UInt(8.W))
+  i.iosp := syncPulse
+  i.iosg := stateGrey
+  val fsm = new FSM ("idle", "send sync", "send data", "stuff last bit") {
+    when (state === "idle") {
+      when (i.oe) {
+        state := "send sync"
+        syncPulse := (1 << 7).U
+        stateGrey := 1.U
+      } otherwise {
+        stateGrey := 0.U
+      }
+    }
+
+    when (state === "send sync") {
+      syncPulse := syncPulse >> 1
+      when (syncPulse(0)) {
+        state := "send data"
+        stateGrey := 3.U
+      } otherwise {
+        stateGrey := 1.U
+      }
+    }
+  }
+}package es.tmoor.usb
+
+import chisel3._
+
+class UsbCore extends Module {
+  /*
+    Submodules: 
+  */
+}import es.tmoor.usb._
+
+object Main extends App {
+  (new chisel3.stage.ChiselStage).execute(
+    Array("-X", "verilog") ++ args,
+    Seq(
+      chisel3.stage.ChiselGeneratorAnnotation(() => new TxPipeline)
+    )
+  )
+}-module(basic).
+-export([main/1]).
+
+-mode(compile).
+
+% decode(<<2#0000:4, Vs:4>>) -> {load, decode_vs(Vs)};
+% decode(<<2#0001:4, Vs:4>>) -> {mul,  decode_vs(Vs)};
+% decode(<<2#0010:4, Vs:4>>) -> {add,  decode_vs(Vs)};
+% decode(<<2#0011:4, Vs:4>>) -> {sub,  decode_vs(Vs)};
+% decode(<<2#0100:4, Vs:4>>) -> {div_, decode_vs(Vs)};
+% decode(<<2#0101:4, Vs:4>>) -> {rem_, decode_vs(Vs)};
+% decode(<<2#0110:4, Vs:4>>) -> {not_, decode_vs(Vs)};
+% decode(<<2#0111:4, Js:4>>) -> {jump, decode_js(Js)};
+% decode(<<2#1000:4, Vs:4>>) -> {ge,   decode_vs(Vs)};
+% decode(<<2#1001:4, Vs:4>>) -> {lt,   decode_vs(Vs)};
+% decode(<<2#1010:4, Ts:4>>) -> {tcst, decode_ts(Ts)};
+% decode(<<2#1011:4, Ts:4>>) -> {tcnv, decode_ts(Ts)};
+% decode(<<2#1100:4, Vs:4>>) -> {put,  decode_vs(Vs)};
+% decode(<<2#1101:4, Vs:4>>) -> {lsl,  decode_vs(Vs)};
+% decode(<<2#1110:4, Vs:4>>) -> {and_, decode_vs(Vs)};
+% decode(<<2#1111:4, Vs:4>>) -> {or_,  decode_vs(Vs)}.
+
+run_jump(Js, Mem, Acc, Reg, Pc, Sp, Msp) -> {error, {run_jump, {Js, Mem, Acc, Reg, Pc, Sp, Msp}}}.
+
+encode_typed(<<2#1000:4>>, V) -> <<0:32, V:32/float>>;
+encode_typed(<<2#1001:4>>, V) -> <<V:64/float>>;
+encode_typed(_, V) -> <<V:64>>.
+
+run_tcnv(Ts, Mem, Acc, Reg, Pc, Sp, Msp) ->
+  io:fwrite("Convert: ~p~n", [Ts]),
+  {_, V} = decode_typed(Acc),
+  Vr = do_bitmask(Ts, encode_typed(Ts, upgrade_to(V, Ts))),
+  {Mem, <<Ts:4/bits, Vr:8/bytes>>, Reg, Pc, Sp, Msp}.
+
+do_bitmask(<<_:2, 2#10:2>>, <<_,_,_,_,_,_,_,H>>) -> <<0,0,0,0,0,0,0,H>>;
+do_bitmask(<<_:2, 2#11:2>>, <<_,_,_,_,_,_,G,H>>) -> <<0,0,0,0,0,0,G,H>>;
+do_bitmask(<<_:2, 2#00:2>>, <<_,_,_,_,E,F,G,H>>) -> <<0,0,0,0,E,F,G,H>>;
+do_bitmask(<<_:2, 2#01:2>>, <<A,B,C,D,E,F,G,H>>) -> <<A,B,C,D,E,F,G,H>>.
+
+run_tcst(Ts, Mem, <<_:4, Acc/bytes>>, Reg, Pc, Sp, Msp) ->
+  io:fwrite("Cast: ~p~n", [Ts]),
+  {Mem, <<Ts:4/bits, (do_bitmask(Ts, Acc))/bytes>>, Reg, Pc, Sp, Msp}.
+
+run_put(<<2#0110:4>>, Mem, Acc, Reg, Pc, Sp, Msp) ->
+  error({notimpl, {put, stack_i8}}),
+  {Mem, Acc, Reg, Pc, Sp, Msp};
+run_put(<<2#0111:4>>, Mem, Acc, Reg, Pc, Sp, Msp) ->
+  error({notimpl, {put, stack_i16}}),
+  {Mem, Acc, Reg, Pc, Sp, Msp};
+run_put(<<2#1000:4>>, Mem, Acc, Reg, Pc, Sp, Msp) ->
+  error({notimpl, {put, stack_i32}}),
+  {Mem, Acc, Reg, Pc, Sp, Msp};
+run_put(<<2#1001:4>>, Mem, Acc, Reg, Pc, Sp, Msp) ->
+  error({notimpl, {put, stack_i64}}),
+  {Mem, Acc, Reg, Pc, Sp, Msp};
+run_put(<<2#1010:4>>, Mem, Acc, Reg, Pc, Sp, Msp) ->
+  error({notimpl, {put, stack_f64}}),
+  {Mem, Acc, Reg, Pc, Sp, Msp};
+run_put(<<2#1011:4>>, Mem, Acc, Reg, Pc, Sp, Msp) ->
+  error({notimpl, {put, stack_f64}}),
+  {Mem, Acc, Reg, Pc, Sp, Msp};
+run_put(<<2#1111:4>>, Mem, Acc, Reg, Pc, Sp, Msp) ->
+  <<_:Pc/bytes, _:1, R:7, _/bits>> = Mem,
+  io:fwrite("Put x~B~n", [R]),
+  Nr = maps:put(R, Acc, Reg),
+  {Mem, Acc, Nr, Pc + 1, Sp, Msp};
+run_put(<<2#11:2, Vs:2>>, Mem, Acc, Reg, Pc, Sp, Msp) ->
+  error({notimpl, {put, ref, Vs}}),
+  {Mem, Acc, Reg, Pc, Sp, Msp};
+run_put(_Vs, _Mem, _Acc, _Reg, _Pc, _Sp, _Msp) -> 
+  error({put, literal}).
+
+max_t(2#01, _) -> 2#01;
+max_t(_, 2#01) -> 2#01;
+max_t(2#00, _) -> 2#00;
+max_t(_, 2#00) -> 2#00;
+max_t(2#11, _) -> 2#11;
+max_t(_, 2#11) -> 2#11;
+max_t(_, _) -> 2#10.
+
+% Unsigned
+upgrade_type(<<2#00:2, T1:2>>, <<2#00:2, T2:2>>) -> <<2#00:2, (max_t(T1, T2)):2>>;
+% Signed
+upgrade_type(<<2#01:2, T1:2>>, <<0:1, _:1, T2:2>>) -> <<2#01:2, (max_t(T1, T2)):2>>;
+upgrade_type(<<0:1, _:1, T1:2>>, <<2#01:2, T2:2>>) -> <<2#01:2, (max_t(T1, T2)):2>>;
+% Float
+upgrade_type(<<2#1001:4>>, _) -> <<2#1001:4>>;
+upgrade_type(_, <<2#1001:4>>) -> <<2#1001:4>>;
+upgrade_type(<<2#1000:4>>, _) -> <<2#1000:4>>;
+upgrade_type(_, <<2#1000:4>>) -> <<2#1000:4>>.
+
+upgrade_to(X, <<2#0010:4>>) ->
+  <<_:56, R:8/unsigned>> = <<(trunc(X)):64>>,
+  R;
+upgrade_to(X, <<2#0011:4>>) ->
+  <<_:48, R:16/unsigned>> = <<(trunc(X)):64>>,
+  R;
+upgrade_to(X, <<2#0000:4>>) ->
+  <<_:32, R:32/unsigned>> = <<(trunc(X)):64>>,
+  R;
+upgrade_to(X, <<2#0001:4>>) ->
+  <<R:64/unsigned>> = <<(trunc(X)):64>>,
+  R;
+upgrade_to(X, <<2#01:2, _:2>>) ->
+  <<R:64/signed>> = <<(trunc(X)):64>>,
+  R;
+upgrade_to(X, <<2#100:3, _:1>>) -> float(X).
+
+upgrade(V1, V2) ->
+  {T1, X1} = decode_typed(V1),
+  {T2, X2} = decode_typed(V2),
+  Tr = upgrade_type(<<T1:4>>, <<T2:4>>),
+  {Tr, upgrade_to(X1, Tr), upgrade_to(X2, Tr)}.
+
+% Unsigned
+make_acc(<<2#0010:4>>, Acc) -> <<2#0010:4, 0:56, Acc:8/unsigned>>;
+make_acc(<<2#0011:4>>, Acc) -> <<2#0011:4, 0:48, Acc:16/unsigned>>;
+make_acc(<<2#0000:4>>, Acc) -> <<2#0000:4, 0:32, Acc:32/unsigned>>;
+make_acc(<<2#0001:4>>, Acc) -> <<2#0001:4, Acc:64/unsigned>>;
+% Signed
+make_acc(<<0:1, T:3>>, Acc) -> <<0:1, T:3, Acc:64/signed>>;
+% Float
+make_acc(<<2#1000:4>>, Acc) -> <<2#1000:4, 0:32, Acc:32/float>>;
+make_acc(<<2#1001:4>>, Acc) -> <<2#1001:4, Acc:64/float>>;
+% Exception
+make_acc(T, _) -> error({not_a_type, T}).
+
+% Unsigned
+decode_typed(<<2#00:2, T:2, Acc:64/unsigned>>) -> {T, Acc};
+% Signed
+decode_typed(<<2#0110:4, _:56, Acc:8/signed>>) -> {2#0110, Acc};
+decode_typed(<<2#0111:4, _:48, Acc:16/signed>>) -> {2#0111, Acc};
+decode_typed(<<2#0100:4, _:32, Acc:32/signed>>) -> {2#0100, Acc};
+decode_typed(<<2#0101:4, Acc:64/signed>>) -> {2#0101, Acc};
+% Float
+decode_typed(<<2#1000:4, _:32, Acc:32/float>>) -> {2#1000, Acc};
+decode_typed(<<2#1001:4, Acc:64/float>>) -> {2#1001, Acc};
+decode_typed(<<T:4, Acc>>) -> error({invalid_typed, {T, Acc}}).
+
+run_div(A, B) when is_float(A) andalso is_float(B) -> A / B;
+run_div(A, B) when is_integer(A) andalso is_integer(B) -> A div B.
+run_rem(A, B) when is_float(A) andalso is_float(B) -> math:fmod(A, B);
+run_rem(A, B) when is_integer(A) andalso is_integer(B) -> A rem B.
+
+do_lsl_op(A, B) when is_integer(A) andalso B >= 0 ->
+  io:fwrite("Lsl: ~p~n", [B]),
+  A bsl B;
+do_lsl_op(A, B) when is_integer(A) ->
+  io:fwrite("Lsr: ~p~n", [B]),
+  A bsr (-B);
+do_lsl_op(A, B) when is_float(A) ->
+  io:fwrite("Lsl: ~p~n", [B]),
+  <<S:1, E:11, M:52>> = <<A:64/float>>,
+  <<R:64/float>> = <<S:1, (E+B):11, M:52>>,
+  R.
+
+run_lsl(A, B) ->
+  {Tr, Ta} = decode_typed(A),
+  {_, Tb} = decode_typed(B),
+  make_acc(<<Tr:4>>, do_lsl_op(Ta, trunc(Tb))).
+  
+run_op(2#0000, _, V) ->
+  io:fwrite("Load: ~p~n", [element(2, decode_typed(V))]),
+  V;
+run_op(2#0001, Acc, V) ->
+  {Tr, Ta, Tv} = upgrade(Acc, V),
+  io:fwrite("Mul: ~p~n", [Tv]),
+  make_acc(Tr, Ta * Tv);
+run_op(2#0010, Acc, V) ->
+  {Tr, Ta, Tv} = upgrade(Acc, V),
+  io:fwrite("Add: ~p~n", [Tv]),
+  make_acc(Tr, Ta + Tv);
+run_op(2#0011, Acc, V) ->
+  {Tr, Ta, Tv} = upgrade(Acc, V),
+  io:fwrite("Sub: ~p~n", [Tv]),
+  make_acc(Tr, Ta - Tv);
+run_op(2#0100, Acc, V) ->
+  {Tr, Ta, Tv} = upgrade(Acc, V),
+  io:fwrite("Div: ~p~n", [Tv]),
+  make_acc(Tr, run_div(Ta, Tv));
+run_op(2#0101, Acc, V) ->
+  {Tr, Ta, Tv} = upgrade(Acc, V),
+  io:fwrite("Rem: ~p~n", [Tv]),
+  make_acc(Tr, run_rem(Ta, Tv));
+run_op(2#0110, Acc, V) ->
+  <<_:4, A:64>> = Acc,
+  <<_:4, B:64>> = V,
+  io:fwrite("Xor: ~p~n", [B]),
+  <<2#0001:4, (A bxor B):64/unsigned>>;
+run_op(2#1000, Acc, V) ->
+  {_, Ta, Tv} = upgrade(Acc, V),
+  io:fwrite("Ge: ~p~n", [Tv]),
+  <<2#0000:4, (if Ta >= Tv -> 1; true -> 0 end):64>>;
+run_op(2#1001, Acc, V) ->
+  {_, Ta, Tv} = upgrade(Acc, V),
+  io:fwrite("Lt: ~p~n", [Tv]),
+  <<2#0000:4, (if Ta < Tv -> 1; true -> 0 end):64>>;
+run_op(2#1101, Acc, V) ->
+  run_lsl(Acc, V);
+  
+
+run_op(Op, _, _) -> error({"Not an op", Op}).
+
+
+run_instr(<<2#0111:4, Js:4>>, Mem, Acc, Reg, Pc, Sp, Msp) -> run_jump(<<Js:4>>, Mem, Acc, Reg, Pc, Sp, Msp);
+run_instr(<<2#1010:4, Ts:4>>, Mem, Acc, Reg, Pc, Sp, Msp) -> run_tcst(<<Ts:4>>, Mem, Acc, Reg, Pc, Sp, Msp);
+run_instr(<<2#1011:4, Ts:4>>, Mem, Acc, Reg, Pc, Sp, Msp) -> run_tcnv(<<Ts:4>>, Mem, Acc, Reg, Pc, Sp, Msp);
+run_instr(<<2#1100:4, Vs:4>>, Mem, Acc, Reg, Pc, Sp, Msp) -> run_put(<<Vs:4>>, Mem, Acc, Reg, Pc, Sp, Msp);
+
+run_instr(<<Op:4, 2#0010:4>>, Mem, Acc, Reg, Pc, Sp, Msp) ->
+  <<_:Pc/bytes, X:1/bytes, _/bits>> = Mem,
+  <<T:1/signed, _:7>> = X,
+  {Mem, run_op(Op, Acc, <<2#0010:4, T:56, X/bytes>>), Reg, Pc + 1, Sp, Msp};
+run_instr(<<Op:4, 2#0011:4>>, Mem, Acc, Reg, Pc, Sp, Msp) -> 
+  <<_:Pc/bytes, X:2/bytes, _/bits>> = Mem,
+  <<T:1/signed, _:15>> = X,
+  {Mem, run_op(Op, Acc, <<2#0011:4, T:48, X/bytes>>), Reg, Pc + 2, Sp, Msp};
+run_instr(<<Op:4, 2#0000:4>>, Mem, Acc, Reg, Pc, Sp, Msp) -> 
+  <<_:Pc/bytes, X:4/bytes, _/bits>> = Mem,
+  <<T:1/signed, _:31>> = X,
+  {Mem, run_op(Op, Acc, <<2#0000:4, T:32, X/bytes>>), Reg, Pc + 4, Sp, Msp};
+run_instr(<<Op:4, 2#0001:4>>, Mem, Acc, Reg, Pc, Sp, Msp) -> 
+  <<_:Pc/bytes, X:8/bytes, _/bits>> = Mem,
+  {Mem, run_op(Op, Acc, <<2#0001:4, X/bytes>>), Reg, Pc + 8, Sp, Msp};
+run_instr(<<Op:4, 2#0100:4>>, Mem, Acc, Reg, Pc, Sp, Msp) -> 
+  <<_:Pc/bytes, X:4/bytes, _/bits>> = Mem,
+  {Mem, run_op(Op, Acc, <<2#1000:4, X/bytes>>), Reg, Pc + 4, Sp, Msp};
+run_instr(<<Op:4, 2#0101:4>>, Mem, Acc, Reg, Pc, Sp, Msp) ->
+  <<_:Pc/bytes, X:8/bytes, _/bits>> = Mem,
+  {Mem, run_op(Op, Acc, <<2#1001:4, X/bytes>>), Reg, Pc + 8, Sp, Msp};
+
+run_instr(<<Op:4, 2#0110:4>>, Mem, Acc, Reg, Pc, Sp, Msp) -> do_stack_1i;
+run_instr(<<Op:4, 2#0111:4>>, Mem, Acc, Reg, Pc, Sp, Msp) -> do_stack_1i;
+run_instr(<<Op:4, 2#1000:4>>, Mem, Acc, Reg, Pc, Sp, Msp) -> do_stack_4i;
+run_instr(<<Op:4, 2#1001:4>>, Mem, Acc, Reg, Pc, Sp, Msp) -> do_stack_8i;
+run_instr(<<Op:4, 2#1010:4>>, Mem, Acc, Reg, Pc, Sp, Msp) -> do_stack_4f;
+run_instr(<<Op:4, 2#1011:4>>, Mem, Acc, Reg, Pc, Sp, Msp) -> do_stack_8f;
+
+run_instr(<<Op:4, 2#1110:4>>, Mem, Acc, Reg, Pc, Sp, Msp) ->
+  % Reg:
+  %   0 => ref: 8 bit sint
+  %   1 => ref: 16 bit sint
+  {error, {notimpl, {ref, s8s16}}};
+run_instr(<<Op:4, 2#1100:4>>, Mem, Acc, Reg, Pc, Sp, Msp) ->
+  % Reg:
+  %   0 => ref: 32 bit sint
+  %   1 => ref: 64 bit sint
+  {error, {notimpl, {ref, s32s64}}};
+run_instr(<<Op:4, 2#1101:4>>, Mem, Acc, Reg, Pc, Sp, Msp) ->
+  % Reg:
+  %   0 => ref: 32 bit float
+  %   1 => ref: 64 bit float
+  {error, {notimpl, {ref, f32f64}}};
+run_instr(<<Op:4, 2#1111:4>>, Mem, Acc, Reg, Pc, Sp, Msp) ->
+  <<_:Pc/bytes, _:1, R:7, _/bits>> = Mem,
+  {Mem, run_op(Op, Acc, maps:get(R, Reg)), Reg, Pc + 1, Sp, Msp};
+
+run_instr(Op, _Mem, _Acc, _Reg, _Pc, _Sp, _Msp) ->
+  {error, {unexpected, Op}}.
+
+reg_to_str(Reg) ->
+  lists:flatten([io_lib:format("~n  ~B: ~p", [X, decode_typed(Y)]) || {X,Y} <- lists:sort(maps:to_list(Reg))]).
+
+interpret(Mem, Acc, Reg, Pc, Sp, Msp) ->
+  io:fwrite("~n"),
+  <<_:Pc/bytes, I:1/bytes, _/bits>> = Mem,
+  {Nm, Na, Nr, Np, Ns, Nu} = run_instr(I, Mem, Acc, Reg, Pc + 1, Sp, Msp),
+  if
+    Np < byte_size(Nm) ->
+      io:fwrite("Acc: ~p~n", [decode_typed(Na)]),
+      interpret(Nm, Na, Nr, Np, Ns, Nu);
+    true ->
+      io:fwrite("~nMem: ~w~nAcc: ~p~nReg: ~s~n", [Nm, decode_typed(Na), reg_to_str(Nr)])
+  end.
+
+main([File]) ->
+  {ok, F} = file:read_file(File),
+  io:fwrite("File: ~w~n", [F]),
+  interpret(F, <<0:68>>, maps:from_keys(lists:seq(0, 127), <<0:68>>), 0, byte_size(F), 0).-module(memory).
+-export([start/0]).
+-include("defines.hrl").
+
+listen(Data) ->
+  NewData = receive
+  {store, Addr, Value} ->
+    <<St:Addr/binary, _:(bit_size(Value)), End/binary>> = Data,
+    <<St:Addr/binary, Value/binary, End/binary>>;
+  {request, Addr, Width, From} ->
+      Value = binary_part(Data, Addr, Width),
+      From!{mem, Value},
+      Data
+  end,
+  listen(NewData).
+
+
+start() ->
+  Data = <<0:16#20000>>,
+  spawn(fun () -> listen(Data) end).
+-module(memory_controller).
+-export([start/0, get/3, set/3, request/1, store/1]).
+-include("defines.hrl").
+-define(IN(A, X, Y), A >= X andalso A < Y).
+
+request({request, Addr, #{ram := Ram}, Width, Resp})
+    when ?IN(Addr, 16#40000000, 16#40020000 - Width) ->
+  Ram!{request, Addr - 16#40000000, Width, Resp};
+request({request, Addr, #{tty := Tty}, Width, Resp})
+    when ?IN(Addr, 16#80000000, 16#80000010 - Width) ->
+  Tty!{request, Addr - 16#80000000, Width, Resp};
+request({request, Addr, _, _Width, Resp}) ->
+  Resp!{mem, {out_of_range, Addr}}.
+
+store({store, Addr, #{ram := Ram}, Data})
+    when ?IN(Addr, 16#40000000, 16#40020000 - byte_size(Data)) ->
+  Ram!{store, Addr - 16#40000000, Data};
+store({store, Addr, #{tty := Tty}, Data})
+    when ?IN(Addr, 16#80000000, 16#80000010 - byte_size(Data)) ->
+  Tty!{store, Addr - 16#80000000, Data};
+store({store, Addr, _Mem, _Data}) ->
+  io:fwrite("Out of range: ~p~n", [Addr]),
+  halt(1).
+  
+
+listen() ->
+  receive
+    Msg ->
+      memory_controller:(element(1, Msg))(Msg)
+  end,
+  listen().
+
+start() ->
+  Controller = spawn(fun () -> listen() end),
+  Ram = memory:start(),
+  Tty = tty:start(),
+  ssh_tool:start(Tty),
+  #{controller => Controller, ram => Ram, tty => Tty}.
+    
+get(#{memory := Mem=#{controller := Ctrl}}, Addr, Width) ->
+  Ctrl!{request, Addr, Mem, Width, self()},
+  receive
+    {mem, Value} -> Value
+  end.
+
+set(#{memory := Mem=#{controller := Ctrl}}, Addr, Data) ->
+  Ctrl!{store, Addr, Mem, Data}.-module(regfile).
+-export([start/0, get/2, set/3]).
+-include("defines.hrl").
+
+listen(Data) ->
+  NewData = receive
+    {store, Addr, Value} ->
+      StartSize = Addr * ?WORD_SIZE,
+      <<Start:StartSize/bits, _:?WORD_SIZE, End/bits>> = Data,
+      <<Start:StartSize/bits, Value/bits, End/bits>>;
+    {request, Addr, From} ->
+      StartSize = Addr * ?WORD_SIZE,
+      <<_:StartSize/bits, Value:?WORD_SIZE/bits, _/bits>> = Data,
+      From!{reg, Value},
+      Data
+  end,
+  listen(NewData).
+
+start() ->
+  Data = <<0:?REG_SIZE>>,
+  spawn(fun () -> listen(Data) end).
+
+get(#{regfile := Reg}, Addr) ->
+  Reg!{request, Addr, self()},
+  receive
+    {reg, Value} -> Value
+  end.
+set(#{regfile := Reg}, Addr, Data) ->
+  Reg!{store, Addr, Data}.-module(simulator).
+-export([main/1, run/1, setup/0]).
+-include("defines.hrl").
+
+run(Prog) ->
+  {ok, Bits} = file:read_file(Prog),
+  io:fwrite("Running ~s~n", [Bits]).
+ 
+setup() ->
+  Reg = regfile:start(),
+  Mem = memory_controller:start(),
+  #{regfile => Reg, memory => Mem}.
+
+
+main([File]) ->
+  {ok, FileContent} = file:read_file(File),
+  Parts = [element(2, io_lib:fread("~2u", X)) || X <- re:split(binary_to_list(FileContent), "\\s+", [{return, list}])],
+  io:fwrite("~p~n", [Parts]).-module(tty).
+-export([start/0]).
+-include("defines.hrl").
+
+-define(BUFFER_SIZE, 16#20000).
+
+listen(Data, PRead, PWrite) ->
+  receive
+    {char, Value} ->
+      <<St:PWrite/binary, _:8, End/bits>> = Data,
+      listen(<<St:PWrite/binary, Value:8, End/bits>>, PRead, (PWrite + 1) rem (?BUFFER_SIZE div 8));
+    {request, 1, _, From} when PRead =/= PWrite ->
+      <<_:PRead/binary, Value:8, _/bits>> = Data,
+      From ! {mem, <<Value:8>>},
+      listen(Data, (PRead + 1) rem (?BUFFER_SIZE div 8), PWrite);
+    {request, 1, _, From} ->
+      From ! {mem, nodata},
+      listen(Data, PRead, PWrite);
+    {request, 0, _, From} ->
+      N = if PRead =:= PWrite -> 0; true -> 1 end,
+      From ! {mem, <<N:8>>},
+      listen(Data, PRead, PWrite);
+    Msg ->
+      io:fwrite("Unexpected msg: ~p~n", [Msg])
+  end.
+
+
+start() ->
+  Buffer = <<0:?BUFFER_SIZE>>,
+  spawn(fun () -> listen(Buffer, 0, 0) end).
+-module(tty_client).
+-export([
+  init/0, start/0,
+  get_char/0, put_char/1
+]).
+-on_load(init/0).
+
+init() ->
+  erlang:load_nif("./tty_client", 0).
+
+put_char(_) -> erlang:nif_error("NIF library not loaded").
+get_char() -> erlang:nif_error("NIF library not loaded").
+
+listen() ->
+  receive
+    {put, C} -> put_char(C)
+  end,
+  listen().
+
+start() ->
+  spawn(fun () ->
+    register(tty_client, self()),
+    io:fwrite("\e[2J\e[3J\e[0;0H", []),
+    listen()
+  end),
+  loop().
+
+loop() ->
+  timer:sleep(25),
+  X = get_char(),
+  if X =:= [3] -> halt(0); true -> ok end,
+  {tty_server, 'tty_server@127.0.0.1'} ! {char, X},
+  loop().
+-module(tty_server).
+-export([start/0]).
+
+start() ->
+  io:fwrite("Registering ~p~n", [register(tty_server, self())]),
+  recv_loop(<<>>).
+
+recv_loop(Buffer) ->
+  io:fwrite("Listening ~p~n", [Buffer]),
+  NewBuffer = receive
+    {char, [127]} when Buffer =/= <<>> ->
+      {tty_client, 'tty_client@127.0.0.1'} ! {put, 127},
+      <<NB:(byte_size(Buffer)-1)/binary, _/bits>> = Buffer,
+      NB;
+    {char, [C]} when C =/= 127 ->
+      {tty_client, 'tty_client@127.0.0.1'} ! {put, C},
+      <<Buffer/bits, C:8>>;
+    {char, C} ->
+      io:fwrite("Ignore ~p~n", [C]),
+      Buffer;
+    Msg -> 
+      io:fwrite("Got ~p~n", [Msg]),
+      Buffer
+  end,
+  recv_loop(NewBuffer).
+module TxPipeline(
+  input        clock,
+  input        reset,
+  input        i_oe,
+  output [1:0] i_iosg,
+  output [7:0] i_iosp
+);
+`ifdef RANDOMIZE_REG_INIT
+  reg [31:0] _RAND_0;
+  reg [31:0] _RAND_1;
+  reg [31:0] _RAND_2;
+`endif // RANDOMIZE_REG_INIT
+  reg [1:0] stateGrey; // @[TxPipeline.scala 11:22]
+  reg [7:0] syncPulse; // @[TxPipeline.scala 12:22]
+  reg [1:0] state; // @[FSM.scala 10:18]
+  wire [1:0] _GEN_0 = i_oe ? 2'h1 : state; // @[TxPipeline.scala 17:19 18:15 FSM.scala 10:18]
+  wire [1:0] _GEN_3 = state == 2'h0 ? _GEN_0 : state; // @[FSM.scala 10:18 TxPipeline.scala 16:29]
+  assign i_iosg = stateGrey; // @[TxPipeline.scala 14:10]
+  assign i_iosp = syncPulse; // @[TxPipeline.scala 13:10]
+  always @(posedge clock) begin
+    if (state == 2'h1) begin // @[TxPipeline.scala 26:34]
+      if (syncPulse[0]) begin // @[TxPipeline.scala 28:27]
+        stateGrey <= 2'h3; // @[TxPipeline.scala 30:19]
+      end else begin
+        stateGrey <= 2'h1; // @[TxPipeline.scala 32:19]
+      end
+    end else if (state == 2'h0) begin // @[TxPipeline.scala 16:29]
+      stateGrey <= {{1'd0}, i_oe};
+    end
+    if (state == 2'h1) begin // @[TxPipeline.scala 26:34]
+      syncPulse <= {{1'd0}, syncPulse[7:1]}; // @[TxPipeline.scala 27:17]
+    end else if (state == 2'h0) begin // @[TxPipeline.scala 16:29]
+      if (i_oe) begin // @[TxPipeline.scala 17:19]
+        syncPulse <= 8'h80; // @[TxPipeline.scala 19:19]
+      end
+    end
+    if (state == 2'h1) begin // @[TxPipeline.scala 26:34]
+      if (syncPulse[0]) begin // @[TxPipeline.scala 28:27]
+        state <= 2'h2; // @[TxPipeline.scala 29:15]
+      end else begin
+        state <= _GEN_3;
+      end
+    end else begin
+      state <= _GEN_3;
+    end
+  end
+// Register and memory initialization
+`ifdef RANDOMIZE_GARBAGE_ASSIGN
+`define RANDOMIZE
+`endif
+`ifdef RANDOMIZE_INVALID_ASSIGN
+`define RANDOMIZE
+`endif
+`ifdef RANDOMIZE_REG_INIT
+`define RANDOMIZE
+`endif
+`ifdef RANDOMIZE_MEM_INIT
+`define RANDOMIZE
+`endif
+`ifndef RANDOM
+`define RANDOM $random
+`endif
+`ifdef RANDOMIZE_MEM_INIT
+  integer initvar;
+`endif
+`ifndef SYNTHESIS
+`ifdef FIRRTL_BEFORE_INITIAL
+`FIRRTL_BEFORE_INITIAL
+`endif
+initial begin
+  `ifdef RANDOMIZE
+    `ifdef INIT_RANDOM
+      `INIT_RANDOM
+    `endif
+    `ifndef VERILATOR
+      `ifdef RANDOMIZE_DELAY
+        #`RANDOMIZE_DELAY begin end
+      `else
+        #0.002 begin end
+      `endif
+    `endif
+`ifdef RANDOMIZE_REG_INIT
+  _RAND_0 = {1{`RANDOM}};
+  stateGrey = _RAND_0[1:0];
+  _RAND_1 = {1{`RANDOM}};
+  syncPulse = _RAND_1[7:0];
+  _RAND_2 = {1{`RANDOM}};
+  state = _RAND_2[1:0];
+`endif // RANDOMIZE_REG_INIT
+  `endif // RANDOMIZE
+end // initial
+`ifdef FIRRTL_AFTER_INITIAL
+`FIRRTL_AFTER_INITIAL
+`endif
+`endif // SYNTHESIS
+endmodule

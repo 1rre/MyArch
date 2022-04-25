@@ -2,4 +2,4 @@
 **/.bloop
 **/.metals
 **/out
-
+**/erl_crash.dump
