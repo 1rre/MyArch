@@ -1,7 +1,7 @@
 import mill._, scalalib._
 
-object DynArch extends ScalaModule {
-  def scalaVersion = "3.1.2"
+object MyLang extends ScalaModule {
+  def scalaVersion = "2.13.8"
 
   def ivyDeps = Agg(ivy"org.scala-lang.modules::scala-parser-combinators::2.1.1")
 }

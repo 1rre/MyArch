@@ -1,0 +1,18 @@
+# Auto-imported
+
+alias fun[T]: fun[[], T]
+
+if:
+  | 0, ifFalse: fun[T] ifFalse
+  | _, ifTrue: fun[T] ifTrue
+  | 0, _, ifFalse: fun[T] ifFalse
+  | _, ifTrue: fun[T], _ ifTrue
+
+for:
+  | r: range, _: fun[s32, _], isEmpty r ()
+  | r: range, do: fun[s32, _] (
+    do (head r)
+    for (tail r) do
+  )
+  | a: array[T], 
+

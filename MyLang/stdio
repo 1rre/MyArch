@@ -1,0 +1,6 @@
+
+printf [CString, _*]
+
+println:
+  | s: String printf "%s\n" s
+  | i: S32 printf "%d\n" i
