@@ -1,6 +1,7 @@
 package mine
 
 import util.parsing.combinator.RegexParsers
+import scala.util.parsing.input.Positional
 
 object Parser extends RegexParsers {
   sealed trait Literal extends Param with Expression
@@ -34,18 +35,18 @@ object Parser extends RegexParsers {
     "[fF]32".r ^^^ F32 |||
     "[fF]64".r ^^^ F64 |||
     "_" ^^^ WildCard |||
+    (identifier ^^ (NamedType(_)))
+  )
+  def typeName: Parser[Type] = (
+    namedTypeName |||
     ("[" ~> repsep(typeParam ^^ (x => (x.name, x.t)) | typeName ^^ (("", _)), ",") <~ "]" ^^ (x => TupleType(x.zipWithIndex.map {
       case (("", t), i) => (s"_$i", t)
       case (s, _) => s
     }))) |||
-    (identifier ^^ (NamedType(_)))
-  )
-  def typeName = (
-    namedTypeName |||
     (namedTypeName ~ typeParams ^^ {case a~b => ParamType(a,b)})
   )
 
-  sealed trait Expression
+  sealed trait Expression extends Positional
   case class Block(exprs: Seq[Expression]) extends Expression
   case class Ident(name: String) extends Expression
   case class MemAccess(on: Expression, member: String) extends Expression
@@ -61,7 +62,7 @@ object Parser extends RegexParsers {
     structOrTuple |||
     (funCases)
 
-  def nonCallExpression: Parser[Expression] =
+  def nonCallExpression: Parser[Expression] = positioned (
     literal |||
     block |||
     (identifier ^^ (Ident(_))) |||
@@ -69,12 +70,13 @@ object Parser extends RegexParsers {
     structOrTuple |||
     (funCases) |||
     memAccess
+  )
 
   def memAccess = chainl1(nonRecursiveExpression, identifier, "." ^^^ ({
     (a: Expression,  b: String) => MemAccess(a, b)
   }))
   
-  def expression: Parser[Expression] =
+  def expression: Parser[Expression] = positioned (
     memAccess |||
     literal |||
     block |||
@@ -84,6 +86,7 @@ object Parser extends RegexParsers {
     byNameFunction |||
     structOrTuple |||
     fun
+  )
 
   case class Struct(membs: Seq[Assignment]) extends Expression
   def structOrTuple =
@@ -94,7 +97,7 @@ object Parser extends RegexParsers {
 
   def endl = accept(';') | accept('\n')
 
-  def block = "(" ~> repsep(expression, endl) <~ ")" ^^ (Block(_))
+  def block = positioned("(" ~> repsep(expression, endl) <~ ")" ^^ (Block(_)))
 
   def identifier =
     "[a-zA-Z_][a-zA-Z_0-9]*".r |
@@ -111,7 +114,7 @@ object Parser extends RegexParsers {
   case class AnonFun(cases: Seq[FunCase]) extends Expression
   case class FunCase(params: Seq[Param], expr: Expression)
   def funCases = (
-    (("|" ~> repsep(param, ",") ~ expression ^^ {case a~b => FunCase(a,b)}))
+    (("|" ~> repsep(positioned(param), ",") ~ expression ^^ {case a~b => FunCase(a,b)}))
   ).+ ^^ (AnonFun(_))
   case class Assignment(name: String, expr: Expression) extends Expression
   case class ExtFun(name: String, signature: Seq[Type], returns: Option[Type]) extends Expression
@@ -120,7 +123,7 @@ object Parser extends RegexParsers {
   def assignment = 
     identifier ~ (":" ~> expression) ^^ (x => Assignment(x._1, x._2))
   def fun: Parser[Expression] =
-    assignment | extFun
+    positioned(assignment | extFun)
 
   case class FunCall(fun: Expression, params: Seq[Expression]) extends Expression
   def __funcallpf(a: Expression, b: Expression) = a match {
@@ -128,14 +131,14 @@ object Parser extends RegexParsers {
     case a => FunCall(a, Seq(b))
   }
   def funCall =
-    chainl1((identifier ^^ (Ident(_))), nonCallExpression, not(accept('\n')) ^^^ (__funcallpf(_,_)))
+    chainl1((identifier ^^ (Ident(_))), positioned(nonCallExpression), not(accept('\n')) ^^^ (__funcallpf(_,_)))
   //identifier ~ (repsep(expression, not(accept('\n')))) ^^ {case a~b => FunCall(a,b)}
 
-  sealed trait Param
+  sealed trait Param extends Positional
   def param = "_" ^^^ WildCard | typeParam | literal
 
   case class TypeParam(name: String, t: Type) extends Param
-  def typeParam = identifier ~ ("/" ~> typeName) ^^ (x => TypeParam(x._1, x._2))
+  def typeParam: Parser[TypeParam] = identifier ~ ("/" ~> typeName) ^^ (x => TypeParam(x._1, x._2))
 
   case class IntLiteral(value: BigInt) extends Literal
   def intLiteral = "[0-9]+".r ^^ (BigInt(_)) ^^ (IntLiteral(_))

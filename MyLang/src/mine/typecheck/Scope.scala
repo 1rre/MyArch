@@ -5,115 +5,127 @@ import Parser._
 import collection.mutable
 import mutable.Buffer
 
-abstract class Scope {
-  val names = mutable.Map[String, Buffer[Type]]()
-  val binds = mutable.Map[String, Seq[Type]]()
-  def addName(n: String, expr: Expression): Unit = {
-    addName(n, possibleTypes(expr))
+object Unifier {
+  def anyFun = new Parameterised("Fun", Unknown, Unknown)
+}
+sealed trait Unifier {
+  def restrict(t: Unifier): Unifier
+}
+class TStruct(knownMembers: (String, Unifier)*) extends Unifier {
+  def restrict(t: Unifier): Unifier = ???
+}
+class Parameterised(name: String, params: Unifier*) extends Unifier {
+  // This may need binds to be useful?
+  def restrict(t: Unifier): Unifier = ???
+}
+class Union(opts: Unifier*) extends Unifier {
+  def restrict(t: Unifier): Unifier = ???
+}
+class Superposition(of: Unifier*) extends Unifier {
+  def restrict(t: Unifier): Unifier = ???
+}
+case object Unknown extends Unifier {
+  def restrict(t: Unifier): Unifier = ???
+}
+case object UF32 extends Unifier {
+  def restrict(t: Unifier): Unifier = ???
+}
+case object UF64 extends Unifier {
+  def restrict(t: Unifier): Unifier =
+    if (t != UF64) throw new Throwable
+    else UF64
+}
+
+object TypedExpression {
+  def apply(e: Expression): TypedExpression = e match {
+    case ma: MemAccess =>
+      TypedMemAccess(ma)
+    case fc: FunCall =>
+      TypedFunCall(fc)
+    case as: Assignment =>
+      TypedAssignment(as)
+    case fl: FloatLiteral =>
+      TypedFloatLiteral(fl)
+    case il: IntLiteral =>
+      TypedIntLiteral(il)
+    case sl: StringLiteral =>
+      TypedStringLiteral(sl)
+    case bn: ByName =>
+      TypedByName(bn)
+    case af: AnonFun =>
+      TypedAnonFun(af)
+    case bl: Block =>
+      TypedBlock(bl)
+    case st: Struct =>
+      TypedStruct(st)
+    case ex: ExtFun =>
+      TypedExtFun(ex)
+    case id: Ident =>
+      TypedIdent(id)
   }
-  def addName(n: String, types: Seq[Type]): Unit = {
-    names.getOrElseUpdate(n, Buffer()) ++= types
-  }
-  def ptr(to: Type) = ParamType(NamedType("Ptr"), Seq(to))
-  def fun(params: Seq[Type], returns: Type) =
-    ParamType(NamedType("Fun"), Seq(TupleType(params.zipWithIndex.map(x => s"_${x._1}" -> x._1))))
-  def struct(membs: (String, Type)*) = {
-    TupleType(membs)
-  }
-  def flatTypes(ts: Seq[Seq[Type]]): Seq[Seq[Type]] =
-    if (ts.isEmpty) Nil
-    else {
-      val tl = flatTypes(ts.tail)
-      ts.head.flatMap(x => tl.map(x +: _))
+}
+sealed trait TypedExpression {
+  var t: Unifier
+}
+sealed trait NameSource {this: TypedExpression => }
+case class TypedMemAccess(a: MemAccess, var t: Unifier = Unknown) extends TypedExpression
+case class TypedFunCall(a: FunCall, var t: Unifier = Unknown) extends TypedExpression
+case class TypedAssignment(a: Assignment, var t: Unifier = Unknown) extends TypedExpression with NameSource
+case class TypedFloatLiteral(a: FloatLiteral, var t: Unifier = Unknown) extends TypedExpression
+case class TypedIntLiteral(a: IntLiteral, var t: Unifier = Unknown) extends TypedExpression
+case class TypedStringLiteral(a: StringLiteral, var t: Unifier = Unknown) extends TypedExpression
+case class TypedByName(a: ByName, var t: Unifier = Unknown) extends TypedExpression
+case class TypedAnonFun(a: AnonFun, var t: Unifier = Unknown) extends TypedExpression
+case class TypedBlock(a: Block, var t: Unifier = Unknown) extends TypedExpression
+case class TypedStruct(a: Struct, var t: Unifier = Unknown) extends TypedExpression
+case class TypedExtFun(a: ExtFun, var t: Unifier = Unknown) extends TypedExpression with NameSource
+case class TypedIdent(a: Ident, var t: Unifier = Unknown) extends TypedExpression
+
+abstract class Scope(optimise: Boolean, debug: Boolean) {
+  val names: Map[String, NameSource]
+
+}
+
+class SubScope(parent: Scope, optimise: Boolean, debug: Boolean) extends Scope(optimise, debug) {
+  val names = parent.names
+}
+
+class RootScope(input: Seq[Expression], optimise: Boolean, debug: Boolean = false) extends Scope(optimise, debug) {
+  val types = input.map(i => TypedExpression(i))
+  val names = types.collect {
+    case as: TypedAssignment => as.a.name -> as
+    case ex: TypedExtFun => ex.a.name -> ex
+  }.toMap
+  def checkTypes(): Unit = {
+    for (t <- types) {
+      println(t)
     }
-  def reduceFunCall(funTypes: Seq[Type], params: Seq[Seq[Type]]): Seq[Type] = {
-    println(s"Valid fun types: $funTypes")
-    println(s"Valid param types: $params")
-    ???
+    for ((name, as) <- names) {
+      println(s"$name -> $as")
+    }
   }
-  def possibleTypes(t: Type): Seq[Type] = t match {
-    case NamedType(t) =>
-      binds(t)
-    case TupleType(ts) =>
-      // TODO: Resolve tuple types, eg [len: x] and [len: y, ptr: z]
-      ???
-    case Multiple(t) =>
-      possibleTypes(t).map(ptr)
-    case ParamType(t, params) =>
-      val pt = flatTypes(params.map(possibleTypes))
-      possibleTypes(t).flatMap(tx => pt.map(p => ParamType(tx, p)))
-    case _ => Seq(t)
-  }
-  def possibleTypes(p: Param): Seq[Type] = p match {
-    case FloatLiteral(value) => Seq(F32, F64)
-    case IntLiteral(value) => Seq(U8, U16, U32, U64, S8, S16, S32, S64)
-    case StringLiteral(value) => Seq (
-      TupleType(Seq("len" -> U32, "ptr" -> ptr(U8))), // Array type string
-      ptr(U8) // C String
-    )
-    case TypeParam(_, t) =>
-      possibleTypes(t)
-    case WildCard => Seq(WildCard)
-  }
-  def possibleTypes(e: Expression): Seq[Type] =  e match {
-    case FloatLiteral(value) => Seq(F32, F64)
-    case IntLiteral(value) => Seq(U8, U16, U32, U64, S8, S16, S32, S64)
-    case StringLiteral(value) => Seq (
-      TupleType(Seq("len" -> U32, "ptr" -> ptr(U8))), // Array type string
-      ptr(U8) // C String
-    )
-    case Block(exprs) => ???
-    case ByName(name) => ???
-    case AnonFun(cases) =>
-      cases.flatMap { c =>
-        val pTypes = c.params.map(p => possibleTypes(p))
-        pTypes.flatMap { p =>
-          val scope = new OneScope(this, c.expr)
-          for (TypeParam(n, t) <- c.params) {
-            println(s"TODO: Add type for $n ($t)")
-          }
-          scope.possibleTypes(c.expr).map(fun(p, _))
-        }
-      }
-    case FunCall(fun, params) =>
-      val funNameScope = new OneScope(this, fun)
-      val funTypes = funNameScope.possibleTypes(fun)
-      val pTypes = flatTypes(params.map(possibleTypes))
-      reduceFunCall(funTypes, pTypes)
-
-    case Struct(membs) => ???
-    case Assignment(name, expr) =>
-      // Assignments shouldn't return anything, but for convenience I'll return the expr's return type
-      val scope = new OneScope(this, expr)
-      val pt = possibleTypes(expr)
-      addName(name, pt)
-      pt
-    case MemAccess(on, member) => ???
-    case ExtFun(name, signature, returns) => ???
-    case Ident(name) =>
-      names.get(name).map(_.toSeq).getOrElse {
-        println(s"Name $name not yet declared. Using wildcard.")
-        Seq(WildCard)
-      }
-  }
-}
-
-abstract class SubScope(parent: Scope) extends Scope {
-  for (n <- parent.names) names += n
-  for (n <- parent.binds) binds += n
-}
-
-class OneScope(parent: Scope, input: Expression) extends Scope {
-  
-}
-
-class RootScope(input: Seq[Expression], optimise: Boolean) extends Scope {
-  binds += "String" -> Seq (
-      TupleType(Seq("len" -> U32, "ptr" -> ptr(U8))), // Array type string
-      ptr(U8) // C String
-    )
   val output = input
-  for (exp <- input) {
-    println(possibleTypes(exp))
-  }
 }
+
+/*
+input.foreach {
+      case ExtFun(name, signature, returns) => 
+      case Block(exprs) =>
+      case AnonFun(cases) =>
+      case FunCall(fun, params) =>
+      case Assignment(name, expr) =>
+      case Struct(membs) =>
+      case Ident(name) =>
+      case MemAccess(on, member) =>
+        // TODO: Ensure that "on" has a member "member"
+      case FloatLiteral(value) =>
+        // I don't think we need to do anything here, as we're not linking anything
+      case IntLiteral(value) =>
+        // I don't think we need to do anything here, as we're not linking anything
+      case StringLiteral(value) =>
+        // I don't think we need to do anything here, as we're not linking anything
+      case ByName(name) =>
+        // I think this may necessitate "name" linking to a function in this context?
+        ???
+    }
+*/

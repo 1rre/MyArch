@@ -8,9 +8,9 @@ import Parser._
   * @param input
   */
 
-class Preprocessor(input: Seq[Expression]) {
+class Preprocessor(input: Seq[Expression], optimise: Boolean = false, debug: Boolean = false) {
   
-  val scope = new RootScope(input, false)
+  val scope = new RootScope(input, optimise, debug)
 
   lazy val output = scope.output
 }

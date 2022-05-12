@@ -1,0 +1,13 @@
+printf/[CString, _*]/_
+
+getA: 10
+getB: 15
+
+main:
+  | (
+    a: getA
+    b: getB
+    printf "%d\n" a
+    printf "%d\n" b
+    0
+  )
