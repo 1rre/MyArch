@@ -3,7 +3,7 @@
 alias fun[T]: fun[[], T]
 
 if:
-  | 0, ifFalse: fun[T] ifFalse
+  | 0, ifFalse: fun[T] ()
   | _, ifTrue: fun[T] ifTrue
   | 0, _, ifFalse: fun[T] ifFalse
   | _, ifTrue: fun[T], _ ifTrue

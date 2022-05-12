@@ -1,0 +1,8 @@
+if/2:
+  | 0, _ => ()
+  | _, ifTrue: Fun[[], T] => ifTrue
+
+if/3:
+  0, _, ifFalse: Fun[[], T] => ifFalse
+  _, ifTrue: Fun[[], T], _ => ifTrue
+
