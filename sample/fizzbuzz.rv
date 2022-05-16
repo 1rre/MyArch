@@ -1,0 +1,13 @@
+max/U32
+r15/Fun[[U32], U32]
+r5/Fun[[U32], U32]
+r3/Fun[[U32], U32]
+
+fizzbuzz:
+|'max ()
+| num (
+  (| r15 num? (println "FizzBuzz")
+  | r3  num? (println "Fizz")
+  | r5  num? (println "Buzz")
+  | (println num)) ()
+)

@@ -1,0 +1,49 @@
+:stem: asciimath
+== Types
+
+Basic Example:
+
+----
+printf/Fun[[CString, S32], S32]
+
+print_int/Fun[[S32], S32]:
+  | i (printf "%d\n" i)
+
+getA: 10
+getB: 15
+
+main:
+  | (
+    a/S32: getA
+    b: getB
+    print_int a
+    print_int b
+    0
+  )
+----
+
+----
+printf/$T1
+print_int/$T2
+getA/$T3
+getB/$T4
+main/$T5
+
+$T1 => Fun[[$T1$1, $T1$2], $T1$3]
+$T1$1 => CString => Ptr[$T1$1$1]
+$T1$1$1 => U8
+$T1$2 => S32
+$T1$3 => S32
+
+$T2 => Fun[[$T2$1], $T2$2]
+$T2$1 => S32
+$T2$2 => S32
+
+i/$T2$1
+
+
+
+$T3 => AnyInt
+$T4 => AnyInt
+$T5 => Fun[[], $T5$1]
+

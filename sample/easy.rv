@@ -1,13 +1,16 @@
-printf/[CString, _*]/_
+printf/Fun[[CString, S32], S32]
+
+print_int/Fun[[S32], S32]:
+  | i (printf "%d\n" i)
 
 getA: 10
 getB: 15
 
 main:
   | (
-    a: getA
+    a/S32: getA
     b: getB
-    printf "%d\n" a
-    printf "%d\n" b
+    print_int a
+    print_int b
     0
   )

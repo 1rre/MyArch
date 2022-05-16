@@ -1,5 +1,5 @@
 
-printf [CString, _*]
+printf/[CString, _*]
 
 println:
   | s: String printf "%s\n" s

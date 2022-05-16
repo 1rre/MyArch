@@ -1,0 +1,13 @@
+
+recurse:
+  | 1, 2 (
+    1
+  )
+  | x, y (
+    recurse x y
+  )
+
+main:
+ | (
+  recurse 1 2
+ )
