@@ -1,0 +1,81 @@
+= RV Summary
+
+== Semantics
+Statements should be separated by either newlines or semi-colons.
+
+== Values
+=== Basic literals
+`0`, `0.0`, `"0"`
+
+=== Identifiers
+`my_val`, `MyVal`, `myVal0`
+
+=== Operations
+`a + b`, `10 + a`, `a * b + c`
+
+=== Function Calls
+`fun x, y, z`, `fun (x), (y), (z)`, `fun (fun x, y), z`
+
+=== Structs
+`[value_1: 10; value_2: 15]`, `[10; value_2: 15]` (syntactic sugar for `[_0: 10; value_2: 15]`), `[]` +
+Structs can also have member functions, declared in the same way as a value. These take an implicit "this" parameter.
+
+== Declarations
+----
+x: 5
+y: 10
+----
+
+----
+x/S32: 5
+y/U32: 10
+----
+
+----
+my_fun:
+| a, b, "add" (
+  a + b
+)
+| a, b, "subtract" (
+  a - b
+)
+| a, b (
+  my_fun a, b, "add"
+)
+----
+
+This is the same as:
+----
+my_fun:
+| a, b, "add" (a + b)
+
+my_fun:
+| a, b, "subtract" (a - b)
+
+my_fun:
+| a, b (my_fun a, b, "add")
+
+
+== Classes
+Classes can be acheived through type declarations and value declarations.
+
+----
+Option:
+[
+  value/Ptr[T],
+  get/Fun[[], T],
+  isDefined/Bool,
+  isEmpty/Bool
+]
+
+None:
+  | [isDefined: false; isEmpty: true]
+
+Some:
+  | value/Ptr[T] [isDefined: true; isEmpty: false; value: value; get: @value]
+
+Option:
+  | value/Ptr[T], value.isNull (None)
+  | value/Ptr[T], (Some value)
+----
+
